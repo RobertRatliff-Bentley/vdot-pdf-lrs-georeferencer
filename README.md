@@ -2,6 +2,10 @@
 
 Georeferences VDOT county PDF maps in MicroStation 2026 / OpenRoads Designer 25 using the VDOT LRS ArcGIS REST service: auto-aligns the PDF to the county boundary, clips it, and places the map image, boundary, per-class LRS route levels, scale bar and north arrow.
 
+## Demo
+
+https://github.com/user-attachments/assets/72b5b800-0210-4505-81ff-6975d6578522
+
 ## Versions
 - `vdot_pdf_lrs_clipper.py` - Python / PyQt5 tool (run with `python load vdot_pdf_lrs_clipper.py`).
 - `VDOT_Georef_Native.mvba` - native VBA version, no Python needed (`vba run [VDOT_Georef_Native]modMain.Main`). Source in `VDOT_Georef_Native_src/`.

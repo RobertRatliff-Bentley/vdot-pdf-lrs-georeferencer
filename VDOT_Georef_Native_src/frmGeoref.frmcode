@@ -1,0 +1,17 @@
+Option Explicit
+
+Private Sub UserForm_Initialize()
+    modUI.BuildUI Me
+End Sub
+
+Private Sub UserForm_Resize()
+    modUI.Layout
+End Sub
+
+Private Sub UserForm_MouseMove(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    modUI.OnHover ""
+End Sub
+
+Private Sub UserForm_QueryClose(Cancel As Integer, CloseMode As Integer)
+    modUI.OnClose
+End Sub

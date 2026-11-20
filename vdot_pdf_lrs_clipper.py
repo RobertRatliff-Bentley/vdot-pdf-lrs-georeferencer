@@ -1493,6 +1493,7 @@ class Card(QtWidgets.QFrame):
 
 class MapView(QtWidgets.QGraphicsView):
     MODE_PAN, MODE_ADJUST, MODE_TIE, MODE_FENCE = 0, 1, 2, 3
+    TIE_TOL_PX = 22.0
     overlayChanged = QtCore.pyqtSignal()
     tiePicked = QtCore.pyqtSignal(object, object)  # world_norm (np 2), pixel (np 2)
     fileDropped = QtCore.pyqtSignal(str)
@@ -1515,9 +1516,15 @@ class MapView(QtWidgets.QGraphicsView):
         self._drag = None
         self._pending_world = None
         self._pending_item = None
+        self._hover_item = None
+        self._band_item = None
+        self._piv = None
+        self._drag_y = 0
+        self._dmode = 0
         self.fence_item = None
         self._fence_start = None
         self.set_mode(self.MODE_PAN)
+        self.viewport().setMouseTracking(True)
 
     # ---- block fence (preview pixel space)
     def set_fence_rect(self, r):
@@ -1604,9 +1611,37 @@ class MapView(QtWidgets.QGraphicsView):
 
     def cancel_pending(self):
         self._pending_world = None
-        if self._pending_item is not None:
-            self.scene().removeItem(self._pending_item)
-            self._pending_item = None
+        for name in ("_pending_item", "_hover_item", "_band_item"):
+            self._clear_item(name)
+
+    def _clear_item(self, name):
+        it = getattr(self, name)
+        if it is not None:
+            self.scene().removeItem(it)
+            setattr(self, name, None)
+
+    def _tie_hover(self, sp):
+        """Tie-tool feedback: snap marker on the overlay, then a rubber band from the picked source."""
+        p = np.array([sp.x(), sp.y()])
+        if self._pending_world is not None:
+            src = apply_G(self.owner.G, self._pending_world[None, :])[0]
+            if self._band_item is None:
+                pen = QtGui.QPen(QtGui.QColor("#f472b6"), 1.5, QtCore.Qt.DashLine)
+                pen.setCosmetic(True)
+                self._band_item = self.scene().addLine(0, 0, 0, 0, pen)
+                self._band_item.setZValue(20)
+            self._band_item.setLine(src[0], src[1], p[0], p[1])
+            return
+        w = self.owner.nearest_overlay_vertex(p, self.TIE_TOL_PX / max(1e-9, self.transform().m11()))
+        if w is None:
+            self._clear_item("_hover_item")
+            return
+        q = apply_G(self.owner.G, w[None, :])[0]
+        if self._hover_item is None:
+            self._hover_item = self._marker(q[0], q[1], "#fde68a")
+            self._hover_item.setZValue(23)
+        else:
+            self._hover_item.setPos(q[0], q[1])
 
     def draw_pins(self, pairs, G):
         for it in self.pin_items:
@@ -1670,7 +1705,10 @@ class MapView(QtWidgets.QGraphicsView):
             ev.accept()
             return
         if ev.button() == QtCore.Qt.LeftButton and self.mode == self.MODE_ADJUST and self.owner.G is not None:
-            self._drag = self.mapToScene(ev.pos())
+            self._drag = self._piv = self.mapToScene(ev.pos())
+            self._drag_y = ev.pos().y()
+            mods = ev.modifiers()
+            self._dmode = 3 if mods & QtCore.Qt.ShiftModifier else 4 if mods & QtCore.Qt.ControlModifier else 2
             ev.accept()
             return
         if self.mode == self.MODE_TIE and self.owner.G is not None:
@@ -1681,10 +1719,11 @@ class MapView(QtWidgets.QGraphicsView):
                 sp = self.mapToScene(ev.pos())
                 p = np.array([sp.x(), sp.y()])
                 if self._pending_world is None:
-                    w = self.owner.nearest_overlay_vertex(p, 25.0 / max(1e-9, self.transform().m11()))
+                    w = self.owner.nearest_overlay_vertex(p, self.TIE_TOL_PX / max(1e-9, self.transform().m11()))
                     if w is None:
-                        self.owner.toast("Click closer to the cyan overlay to pick a source point.")
+                        self.owner.toast("Click on (or near) the cyan boundary line to pick a source point.")
                         return
+                    self._clear_item("_hover_item")
                     self._pending_world = w
                     src = apply_G(self.owner.G, w[None, :])[0]
                     self._pending_item = self._marker(src[0], src[1], "#22d3ee")
@@ -1701,10 +1740,25 @@ class MapView(QtWidgets.QGraphicsView):
             return
         if self._drag is not None:
             sp = self.mapToScene(ev.pos())
-            d = sp - self._drag
+            fine = 0.25 if ev.modifiers() & QtCore.Qt.AltModifier else 1.0
+            dy = ev.pos().y() - self._drag_y          # screen pixels
+            cx, cy = self._piv.x(), self._piv.y()
+            if self._dmode == 3:                      # rotate 0.05 deg / px about the press point
+                a = math.radians(-dy * 0.05 * fine)
+                c, s = math.cos(a), math.sin(a)
+                M = np.array([[c, -s, cx - c * cx + s * cy], [s, c, cy - s * cx - c * cy]])
+            elif self._dmode == 4:                    # scale 0.05 % / px about the press point
+                f = math.exp(-dy * 0.0005 * fine)
+                M = np.array([[f, 0, cx * (1 - f)], [0, f, cy * (1 - f)]])
+            else:
+                d = sp - self._drag
+                M = np.array([[1, 0, d.x() * fine], [0, 1, d.y() * fine]])
             self._drag = sp
-            self.owner.compose_G(np.array([[1, 0, d.x()], [0, 1, d.y()]]))
+            self._drag_y = ev.pos().y()
+            self.owner.compose_G(M)
             return
+        if self.mode == self.MODE_TIE and self.owner.G is not None and self.pixmap_item is not None:
+            self._tie_hover(self.mapToScene(ev.pos()))
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev):
@@ -1997,7 +2051,8 @@ class GeorefWindow(QtWidgets.QWidget):
         row = QtWidgets.QHBoxLayout()
         self.tool_group = QtWidgets.QButtonGroup(self)
         for i, (txt, tip) in enumerate((("✋ Pan", "Pan / zoom the preview (wheel)"),
-                                        ("⤧ Adjust", "Drag to move overlay · Ctrl+wheel scale · Shift+wheel rotate · "
+                                        ("⤧ Adjust", "Drag to move overlay · Shift+drag up/down rotate · Ctrl+drag up/down scale "
+                                                     "(around the press point) · Ctrl/Shift+wheel also work · "
                                                      "arrows nudge · Alt = fine"),
                                         ("📍 Tie points", "Click the cyan boundary, then the matching spot on the PDF. "
                                                          "2+ pairs (3+ for affine) solve the fit. Right-click cancels."))):
@@ -2574,23 +2629,39 @@ class GeorefWindow(QtWidgets.QWidget):
     def set_tool(self, i):
         self.view.set_mode(i)
         self.lb_hint.setText(["Wheel = zoom · drag = pan",
-                              "Drag = move · Ctrl+wheel = scale · Shift+wheel = rotate · arrows = nudge",
-                              "Click cyan boundary → click matching PDF spot · right-click = cancel",
+                              "Drag = move · Shift+drag = rotate · Ctrl+drag = scale · Alt = fine · arrows = nudge",
+                              "Click the cyan line (snaps where the marker shows) → click matching PDF spot · right-click = cancel",
                               "Drag a rectangle on the PDF to set the block fence · wheel = zoom"][i])
         self.view.setFocus()
 
     def nearest_overlay_vertex(self, p, tol):
+        """Closest point anywhere on the overlay lines (not only vertices), in normalized world coords."""
         if self.G is None:
             return None
-        polys = list(self.rings_n) + ([r[4] for r in self.routes] if self.chk_show_routes.isChecked() else [])
+        polys = [(r, True) for r in self.rings_n]
+        if self.chk_show_routes.isChecked():
+            polys += [(r[4], False) for r in self.routes]
+        p = np.asarray(p, float)
         best, bd = None, tol
-        for poly in polys:
-            pp = apply_G(self.G, poly)
-            d = np.hypot(pp[:, 0] - p[0], pp[:, 1] - p[1])
+        for poly, closed in polys:
+            w = np.asarray(poly, float)
+            if len(w) == 0:
+                continue
+            if closed and len(w) > 2:
+                w = np.vstack([w, w[:1]])
+            if len(w) == 1:
+                w = np.vstack([w, w])
+            pp = apply_G(self.G, w)
+            a, ab = pp[:-1], pp[1:] - pp[:-1]
+            l2 = (ab ** 2).sum(1)
+            t = np.clip(((p - a) * ab).sum(1) / np.where(l2 > 0, l2, 1.0), 0.0, 1.0)
+            q = a + ab * t[:, None]
+            d = np.hypot(q[:, 0] - p[0], q[:, 1] - p[1])
             k = int(np.argmin(d))
             if d[k] < bd:
-                best, bd = poly[k], d[k]
-        return None if best is None else np.array(best)
+                bd = d[k]
+                best = w[k] + (w[k + 1] - w[k]) * t[k]
+        return best
 
     @ui_action
     def add_pair(self, w, p):

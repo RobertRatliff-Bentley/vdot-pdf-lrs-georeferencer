@@ -16,6 +16,7 @@ Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hdc As Long, ByVal nIn
 Public Const TOOL_PAN As Long = 0
 Public Const TOOL_ADJUST As Long = 1
 Public Const TOOL_TIE As Long = 2
+Private Const TIE_TOL As Double = 22
 Public Const TOOL_FENCE As Long = 3
 Public gTool As Long
 
@@ -30,6 +31,8 @@ Private mips(1 To 6) As TMip, nMip As Long
 Private VW As Long, VH As Long, vz As Double, vox As Double, voy As Double, viewInit As Boolean
 Private baseBuf() As Byte, baseOK As Boolean, buf() As Byte, flip As Boolean
 Private pendOn As Boolean, pendX As Double, pendY As Double
+Private hovOn As Boolean, hovX As Double, hovY As Double, curOn As Boolean, curSX As Double, curSY As Double
+Private pivX As Double, pivY As Double, hovDirty As Boolean
 Private dragMode As Long, lastSX As Double, lastSY As Double, startSX As Double, startSY As Double
 Private startVox As Double, startVoy As Double, lastDraw As Long
 Private fOn As Boolean, fX0 As Double, fY0 As Double, fX1 As Double, fY1 As Double
@@ -318,7 +321,16 @@ Private Sub DrawOverlay()
         Next
         If pendOn And gHasG Then
             NormToScreen pendX, pendY, sx, sy
+            If curOn Then
+                ThickLine sx, sy, curSX, curSY, 1, &HF4, &H72, &HB6
+                Disc curSX, curSY, 3, &HF4, &H72, &HB6
+            End If
             Marker sx, sy, &H22, &HD3, &HEE
+        ElseIf hovOn And gHasG And gTool = TOOL_TIE Then
+            NormToScreen hovX, hovY, sx, sy
+            Disc sx, sy, 8, &H11, &H18, &H27
+            Disc sx, sy, 6.5, &HFD, &HE6, &H8A
+            Disc sx, sy, 3, &H22, &HD3, &HEE
         End If
         If fOn Then
             DrawFence fX0, fY0, fX1, fY1
@@ -515,7 +527,7 @@ End Sub
 
 '---------------------------------------------------------------- tools
 Public Sub CancelPending()
-    pendOn = False
+    pendOn = False: hovOn = False: curOn = False
 End Sub
 
 Public Sub FenceChanged()
@@ -540,29 +552,70 @@ Private Sub ClampPreview(px As Double, py As Double)
     If py > my Then py = my
 End Sub
 
-Private Function NearestVertex(ByVal sx As Double, ByVal sy As Double, ByVal tol As Double, nx As Double, ny As Double) As Boolean
-    Dim k As Long, i As Long, x As Double, y As Double, d As Double, bd As Double
+Private Function NearestOnOverlay(ByVal sx As Double, ByVal sy As Double, ByVal tol As Double, nx As Double, ny As Double) As Boolean
+    Dim k As Long, bd As Double
     bd = tol * tol
     For k = 0 To gNR - 1
-        For i = 0 To gRingsN(k).N - 1
-            NormToScreen gRingsN(k).X(i), gRingsN(k).Y(i), x, y
-            d = (x - sx) ^ 2 + (y - sy) ^ 2
-            If d < bd Then bd = d: nx = gRingsN(k).X(i): ny = gRingsN(k).Y(i): NearestVertex = True
-        Next
+        If NearestOnPoly(gRingsN(k), True, sx, sy, bd, nx, ny) Then NearestOnOverlay = True
     Next
     If Chk("chkShowRoutes") Then
         For k = 0 To gNRt - 1
-            For i = 0 To gRoutesN(k).N - 1
-                NormToScreen gRoutesN(k).X(i), gRoutesN(k).Y(i), x, y
-                d = (x - sx) ^ 2 + (y - sy) ^ 2
-                If d < bd Then bd = d: nx = gRoutesN(k).X(i): ny = gRoutesN(k).Y(i): NearestVertex = True
-            Next
+            If NearestOnPoly(gRoutesN(k), False, sx, sy, bd, nx, ny) Then NearestOnOverlay = True
         Next
     End If
 End Function
 
+'closest point on the polyline's segments (screen space); updates bd/nx/ny (normalized world) when closer
+Private Function NearestOnPoly(p As TPoly, ByVal closed As Boolean, ByVal sx As Double, ByVal sy As Double, _
+                               bd As Double, nx As Double, ny As Double) As Boolean
+    Dim i As Long, j As Long, n As Long, x0 As Double, y0 As Double, x1 As Double, y1 As Double
+    Dim dx As Double, dy As Double, L2 As Double, t As Double, d As Double, qx As Double, qy As Double
+    n = p.N
+    If n < 1 Then Exit Function
+    NormToScreen p.X(0), p.Y(0), x0, y0
+    If n = 1 Then
+        d = (x0 - sx) ^ 2 + (y0 - sy) ^ 2
+        If d < bd Then bd = d: nx = p.X(0): ny = p.Y(0): NearestOnPoly = True
+        Exit Function
+    End If
+    For i = 1 To IIf(closed, n, n - 1)
+        j = i Mod n
+        NormToScreen p.X(j), p.Y(j), x1, y1
+        dx = x1 - x0: dy = y1 - y0
+        L2 = dx * dx + dy * dy
+        If L2 > 0 Then t = ((sx - x0) * dx + (sy - y0) * dy) / L2 Else t = 0
+        If t < 0 Then t = 0
+        If t > 1 Then t = 1
+        qx = x0 + t * dx: qy = y0 + t * dy
+        d = (qx - sx) ^ 2 + (qy - sy) ^ 2
+        If d < bd Then
+            bd = d
+            nx = p.X(i - 1) + t * (p.X(j) - p.X(i - 1)): ny = p.Y(i - 1) + t * (p.Y(j) - p.Y(i - 1))
+            NearestOnPoly = True
+        End If
+        x0 = x1: y0 = y1
+    Next
+End Function
+
 Private Sub ToPx(ByVal X As Single, ByVal Y As Single, sx As Double, sy As Double)
     sx = X * PtPx(): sy = Y * PtPx()
+End Sub
+
+'tie tool feedback: snap marker on the overlay before the first click, rubber band after it
+Private Sub TieHover(ByVal X As Single, ByVal Y As Single)
+    Dim sx As Double, sy As Double, nx As Double, ny As Double, h As Boolean, chg As Boolean
+    ToPx X, Y, sx, sy
+    If pendOn Then
+        chg = Not curOn Or Abs(sx - curSX) + Abs(sy - curSY) > 2
+        curOn = True: curSX = sx: curSY = sy
+    Else
+        h = NearestOnOverlay(sx, sy, TIE_TOL, nx, ny)
+        chg = (h <> hovOn)
+        If h And hovOn Then chg = Abs(nx - hovX) + Abs(ny - hovY) > 0.0005
+        hovOn = h: hovX = nx: hovY = ny
+    End If
+    If chg Then hovDirty = True
+    If hovDirty And GetTickCount - lastDraw > 60 Then hovDirty = False: ViewRedraw False
 End Sub
 
 Public Sub ViewMouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
@@ -580,6 +633,7 @@ Public Sub ViewMouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal 
         ViewRedraw False
     Case TOOL_ADJUST
         If Button <> 1 Or Not gHasG Then Exit Sub
+        ScreenToPreview sx, sy, pivX, pivY
         If (Shift And 1) <> 0 Then
             dragMode = 3
         ElseIf (Shift And 2) <> 0 Then
@@ -596,15 +650,16 @@ Public Sub ViewMouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal 
         End If
         If Button <> 1 Then Exit Sub
         If Not pendOn Then
-            If Not NearestVertex(sx, sy, 25, nx, ny) Then
-                Toast "Click closer to the cyan overlay to pick a source point."
+            If Not NearestOnOverlay(sx, sy, TIE_TOL, nx, ny) Then
+                Toast "Click on (or near) the cyan boundary line to pick a source point."
                 Exit Sub
             End If
             pendOn = True: pendX = nx: pendY = ny
+            hovOn = False: curOn = True: curSX = sx: curSY = sy
             ViewRedraw False
         Else
             ScreenToPreview sx, sy, px, py
-            pendOn = False
+            pendOn = False: curOn = False
             AddPair pendX, pendY, px, py
             ViewRedraw False
         End If
@@ -617,24 +672,30 @@ End Sub
 
 Public Sub ViewMouseMove(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
     Dim sx As Double, sy As Double, px As Double, py As Double, cx As Double, cy As Double
-    Dim a As Double, co As Double, si As Double, f As Double
-    If dragMode = 0 Then Exit Sub
+    Dim a As Double, co As Double, si As Double, f As Double, fine As Double
+    If dragMode = 0 Then
+        If gTool = TOOL_TIE And gHasG And gHasPdf Then TieHover X, Y
+        Exit Sub
+    End If
     If (Button And 1) = 0 Then ViewMouseUp 1, Shift, X, Y: Exit Sub
     ToPx X, Y, sx, sy
+    fine = IIf((Shift And 4) <> 0, 0.25, 1#)
     Select Case dragMode
     Case 1
         vox = startVox + (sx - startSX): voy = startVoy + (sy - startSY)
         If GetTickCount - lastDraw > 150 Then ViewRedraw True
     Case 2
-        ComposeG 1, 0, (sx - lastSX) / vz, 0, 1, (sy - lastSY) / vz
+        ComposeG 1, 0, (sx - lastSX) / vz * fine, 0, 1, (sy - lastSY) / vz * fine
     Case 3
-        ScreenToPreview VW / 2#, VH / 2#, cx, cy
-        a = Atn2(sy - VH / 2#, sx - VW / 2#) - Atn2(lastSY - VH / 2#, lastSX - VW / 2#)
+        'rotate about the press point: 0.05 deg per pixel of vertical drag (Alt = 1/4)
+        cx = pivX: cy = pivY
+        a = -(sy - lastSY) * 0.05 * fine * 3.14159265358979 / 180#
         co = Cos(a): si = Sin(a)
         ComposeG co, -si, cx - co * cx + si * cy, si, co, cy - si * cx - co * cy
     Case 4
-        ScreenToPreview VW / 2#, VH / 2#, cx, cy
-        f = Exp(-(sy - lastSY) * 0.004)
+        'scale about the press point: 0.05 % per pixel of vertical drag (Alt = 1/4)
+        cx = pivX: cy = pivY
+        f = Exp(-(sy - lastSY) * 0.0005 * fine)
         ComposeG f, 0, cx * (1 - f), 0, f, cy * (1 - f)
     Case 5
         ScreenToPreview sx, sy, px, py

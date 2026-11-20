@@ -387,7 +387,7 @@ Public Sub BuildUI(ByVal frm As Object)
     AddBtn f, "btnReset", "Reset", "btn", PAD + 214, 58, 66, 24
     AddBtn f, "btnPan", ChrW(&H270B) & " Pan", "tool", PAD, 88, 89, 22, "Pan / zoom the preview (drag; use + / " & ChrW(8722) & " to zoom)"
     AddBtn f, "btnAdjust", ChrW(&H2927) & " Adjust", "tool", PAD + 95, 88, 90, 22, _
-        "Drag to move overlay " & UDot() & " Shift+drag rotate " & UDot() & " Ctrl+drag scale"
+        "Drag to move the overlay " & UDot() & " Shift+drag up/down rotates, Ctrl+drag up/down scales (around the press point) " & UDot() & " hold Alt for fine"
     AddBtn f, "btnTie", ChrW(&H2316) & " Tie points", "tool", PAD + 191, 88, 89, 22, _
         "Click the cyan boundary, then the matching spot on the PDF. 2+ pairs (3+ for affine) solve the fit. Right-click cancels."
     Set o = Add(f, "Forms.Label.1", "lblFit", "metric", PAD, 118, IW - 90, 28, "No alignment yet")
@@ -815,8 +815,8 @@ End Sub
 Private Sub SetToolButtons()
     Dim h As Variant
     h = Array("Drag = pan " & UDot() & " + / " & ChrW(8722) & " = zoom", _
-              "Drag = move " & UDot() & " Shift+drag = rotate " & UDot() & " Ctrl+drag = scale", _
-              "Click cyan boundary " & UArrow() & " click matching PDF spot " & UDot() & " right-click = cancel", _
+              "Drag = move " & UDot() & " Shift+drag = rotate " & UDot() & " Ctrl+drag = scale " & UDot() & " Alt = fine", _
+              "Click the cyan line (snaps where the marker shows) " & UArrow() & " click matching PDF spot " & UDot() & " right-click = cancel", _
               "Drag a rectangle on the PDF to set the block fence")
     SetCap "lblHint", CStr(h(gTool))
     mBtnChk("btnPan") = (gTool = TOOL_PAN): StyleBtn "btnPan"

@@ -70,6 +70,13 @@ Private mLogOn As Boolean
 Private mListJ As Collection
 Private mCardOk(1 To 5) As Variant
 Private mBuilding As Boolean
+'adjustable sidebar (splitter)
+Private Const SPL_W As Single = 5
+Private Const VIEW_MIN As Single = 360
+Private mSbw As Single               ' current sidebar width
+Private mSbwApplied As Single        ' width the cards were last reflowed to
+Private mAnchor As Object            ' control name -> Array(left0, width0, kind, isBtn)
+Private mSplitDown As Boolean, mSplitX As Single, mSplitHot As Boolean
 
 '================================================================ palette
 Private Sub LoadPalette(ByVal theme As String)
@@ -288,6 +295,9 @@ Public Sub BuildUI(ByVal frm As Object)
     Set mEvt = New Collection
     Set mListJ = New Collection
     mHover = "": mBusy = 0: mLogOn = False: gTool = TOOL_PAN
+    mSbw = Val(GetSetting(REG_APP, "ui", "sidebar_w", CStr(SBW)))
+    If mSbw < SBW Then mSbw = SBW
+    mSbwApplied = SBW: mSplitDown = False: mSplitHot = False
     LoadPalette GetSetting(REG_APP, "ui", "theme", "dark")
 
     SetupWindow
@@ -417,6 +427,7 @@ Public Sub BuildUI(ByVal frm As Object)
     o.WordWrap = True
     T = T + 300 + 12
     C("fraSide").ScrollHeight = T
+    RecordAnchors
 
     '---- viewbar
     Set f = Add(mF, "Forms.Frame.1", "fraVbar", "viewbar", SBW + 1, HDR_H + 1, 600, VBAR_H)
@@ -438,8 +449,13 @@ Public Sub BuildUI(ByVal frm As Object)
     Add f, "Forms.Label.1", "lblHint", "hint", 600, 8, 300, 14, ""
     Set o = Add(mF, "Forms.Label.1", "lnVbar", "line", SBW + 1, HDR_H + 1 + VBAR_H, 600, 1)
     o.BackStyle = 1
-    Set o = Add(mF, "Forms.Label.1", "lnSide", "line", SBW, HDR_H + 1, 1, 400)
-    o.BackStyle = 1
+    Set o = Add(mF, "Forms.Label.1", "lnSide", "splitter", SBW, HDR_H + 1, SPL_W, 400, "", _
+        "Drag to resize the panel (double-click to reset)")
+    o.BackStyle = 1: o.MousePointer = 9
+    Set o = Add(mF, "Forms.Label.1", "lblGrip", "grip", SBW, 300, SPL_W, 30, _
+        ChrW(&H22EE), "Drag to resize the panel (double-click to reset)")
+    SetFont o, 10, True, True
+    o.TextAlign = 2: o.MousePointer = 9
 
     '---- view
     Set o = Add(mF, "Forms.Image.1", "imgView", "canvas", SBW + 1, HDR_H + VBAR_H + 2, 600, 400)
@@ -507,7 +523,7 @@ Private Sub SizeWindow()
 End Sub
 
 Public Sub Layout()
-    Dim W As Single, H As Single, sy As Single, vy As Single, vh As Single, x As Single, o As Object
+    Dim W As Single, H As Single, sy As Single, vy As Single, vh As Single, x As Single, o As Object, vx As Single
     If mF Is Nothing Or mBuilding Then Exit Sub
     On Error Resume Next
     W = mF.InsideWidth: H = mF.InsideHeight
@@ -522,19 +538,27 @@ Public Sub Layout()
     C("lblSubtitle").Width = o.Left - 10 - 104 - 172
     C("lblCredit").Width = C("lblSubtitle").Width
     ' sidebar
+    If mSbw > W - VIEW_MIN Then mSbw = W - VIEW_MIN
+    If mSbw < SBW Then mSbw = SBW
+    If mSbw <> mSbwApplied Then ReflowSide
+    vx = mSbw + SPL_W
+    C("fraSide").Width = mSbw
     C("fraSide").Height = sy - HDR_H - 1
-    C("lnSide").Height = sy - HDR_H - 1
+    Set o = C("lnSide")
+    o.Left = mSbw: o.Width = SPL_W: o.Height = sy - HDR_H - 1
+    Set o = C("lblGrip")
+    o.Left = mSbw: o.Top = HDR_H + 1 + (sy - HDR_H - 1) / 2 - o.Height / 2
     ' viewbar
-    C("fraVbar").Width = W - SBW - 1
-    C("lnVbar").Width = W - SBW - 1
-    C("lblHint").Width = W - SBW - 1 - 600 - 8
+    C("fraVbar").Left = vx: C("fraVbar").Width = W - vx
+    C("lnVbar").Left = vx: C("lnVbar").Width = W - vx
+    C("lblHint").Width = W - vx - 600 - 8
     ' view
     vy = HDR_H + VBAR_H + 2: vh = sy - vy
     If vh < 40 Then vh = 40
     Set o = C("imgView")
-    o.Left = SBW + 1: o.Top = vy: o.Width = W - SBW - 1: o.Height = vh
+    o.Left = vx: o.Top = vy: o.Width = W - vx: o.Height = vh
     Set o = C("lblDrop")
-    o.Left = SBW + 21: o.Width = W - SBW - 42: o.Top = vy + vh / 2 - 10
+    o.Left = vx + 20: o.Width = W - vx - 40: o.Top = vy + vh / 2 - 10
     ' status bar
     Set o = C("fraStatus")
     o.Top = sy: o.Width = W: o.Height = H - sy
@@ -547,6 +571,104 @@ Public Sub Layout()
     C("txtLog").Width = W - 28
     C("txtLog").Height = LOG_H - 6
     ViewRedraw True
+End Sub
+
+'================================================================ adjustable sidebar
+'anchor kinds: S = stretch with the card, R = keep right-aligned, P = scale position/width (two-column rows)
+Private Sub RecordAnchors()
+    Dim spec As Variant, i As Long, p As Long, nm As String, o As Object, isB As Boolean
+    Set mAnchor = CreateObject("Scripting.Dictionary")
+    spec = Split("lblCard1:S lblCard2:S lblCard3:S lblCard4:S lblCard5:S " & _
+        "txtPdf:S txtPdf_ph:S btnBrowse:R lblPdf:S " & _
+        "txtSearch:S txtSearch_ph:S cboType:R lstJuris:S lblJuris:S btnBoundary:R " & _
+        "chkGrp0:P chkGrp1:P chkGrp2:P chkGrp3:P chkGrp4:P chkGrp5:P chkGrp6:P chkClipRoutes:P chkShowRoutes:P " & _
+        "lblRoutes:S btnRoutes:R " & _
+        "chkUseRoutes:R btnAuto:P btnRefine:P btnReset:P btnPan:P btnAdjust:P btnTie:P lblFit:S btnClearPins:R " & _
+        "chkPlaceBnd:P chkPlaceRoutes:P chkPlaceRaster:P chkClip:P chkWhite:P chkHoles:P chkPdfOff:P chkScaleNorth:P " & _
+        "scrTransp:S lblTransp:R txtLv0:S txtLv1:S txtLv2:S txtLv3:S btnPlace:S lblOut:S", " ")
+    For i = 0 To UBound(spec)
+        p = InStr(spec(i), ":"): nm = Left$(spec(i), p - 1)
+        isB = IsBtn(nm)
+        If isB Then Set o = C(nm & "_bg") Else Set o = C(nm)
+        If Not o Is Nothing Then mAnchor(nm) = Array(o.Left, o.Width, Mid$(spec(i), p + 1), isB)
+    Next
+End Sub
+
+Private Sub ReflowSide()
+    Dim d As Single, r As Single, k As Variant, a As Variant, L As Single, W As Single, n As Long, o As Object
+    If mAnchor Is Nothing Then Exit Sub
+    d = mSbw - SBW: r = (IW + d) / IW
+    For n = 1 To 5
+        C("fraCard" & n).Width = CWD + d
+    Next
+    For Each k In mAnchor.Keys
+        a = mAnchor(k): L = a(0): W = a(1)
+        Select Case a(2)
+            Case "S": W = W + d
+            Case "R": L = L + d
+            Case "P": L = PAD + (L - PAD) * r: W = W * r
+        End Select
+        If a(3) Then
+            MoveBtn CStr(k), L, C(k & "_bg").Top, W
+        Else
+            Set o = C(k)
+            o.Left = L: o.Width = W
+        End If
+    Next
+    mSbwApplied = mSbw
+End Sub
+
+Private Function IsSplit(ByVal nm As String) As Boolean
+    IsSplit = (nm = "lnSide" Or nm = "lblGrip")
+End Function
+
+Private Sub SplitHot(ByVal hot As Boolean)
+    If hot = mSplitHot Then Exit Sub
+    mSplitHot = hot
+    C("lnSide").BackColor = IIf(hot, PalC("accent"), PalC("border"))
+    C("lblGrip").ForeColor = IIf(hot, PalC("on_accent"), PalC("hint"))
+End Sub
+
+Public Sub SplitMouse(ByVal nm As String, ByVal kind As String, ByVal Button As Integer, ByVal X As Single)
+    Dim nw As Single
+    If mF Is Nothing Or mBuilding Then Exit Sub
+    If Not IsSplit(nm) Then
+        If mSplitHot And Not mSplitDown Then SplitHot False
+        Exit Sub
+    End If
+    Select Case kind
+        Case "down"
+            If (Button And 1) = 0 Or mBusy > 0 Then Exit Sub
+            mSplitDown = True: mSplitX = X + C(nm).Left - C("lnSide").Left
+            SplitHot True
+        Case "move"
+            SplitHot True
+            If Not mSplitDown Then Exit Sub
+            If (Button And 1) = 0 Then SplitMouse nm, "up", 1, X: Exit Sub
+            nw = SplitClamp(C(nm).Left + X - mSplitX)
+            C("lnSide").Left = nw: C("lblGrip").Left = nw
+        Case "up"
+            If Not mSplitDown Then Exit Sub
+            mSplitDown = False
+            SetSidebarWidth C("lnSide").Left
+        Case "dbl"
+            mSplitDown = False
+            SetSidebarWidth SBW
+    End Select
+End Sub
+
+Private Function SplitClamp(ByVal v As Single) As Single
+    Dim W As Single
+    W = mF.InsideWidth
+    If v > W - VIEW_MIN Then v = W - VIEW_MIN
+    If v < SBW Then v = SBW
+    SplitClamp = v
+End Function
+
+Public Sub SetSidebarWidth(ByVal v As Single)
+    mSbw = SplitClamp(v)
+    SaveSetting REG_APP, "ui", "sidebar_w", CStr(Round(mSbw))
+    Layout
 End Sub
 
 '================================================================ theme
@@ -565,6 +687,8 @@ Public Sub ApplyTheme(ByVal theme As String)
             Case "viewbar": o.BackColor = PalC("viewbar")
             Case "statusbar": o.BackColor = PalC("statusbar")
             Case "line": o.BackColor = PalC("border")
+            Case "splitter": o.BackColor = PalC("border")
+            Case "grip": o.ForeColor = PalC("hint")
             Case "logobox": o.BackColor = RGB(255, 255, 255)
             Case "title": o.ForeColor = PalC("title")
             Case "subtitle": o.ForeColor = PalC("subtitle")
@@ -654,6 +778,7 @@ End Sub
 Public Sub OnHover(ByVal nm As String)
     Dim old As String
     If mF Is Nothing Then Exit Sub
+    If mSplitHot And Not mSplitDown And Not IsSplit(nm) Then SplitHot False
     If Right$(nm, 3) = "_bg" Then nm = Left$(nm, Len(nm) - 3)
     If Not IsBtn(nm) Then nm = ""
     If nm = mHover Then Exit Sub

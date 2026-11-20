@@ -36,6 +36,19 @@ End Sub
 
 Private Sub eLbl_MouseMove(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
     modUI.OnHover Name
+    modUI.SplitMouse Name, "move", Button, X
+End Sub
+
+Private Sub eLbl_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    modUI.SplitMouse Name, "down", Button, X
+End Sub
+
+Private Sub eLbl_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, ByVal X As Single, ByVal Y As Single)
+    modUI.SplitMouse Name, "up", Button, X
+End Sub
+
+Private Sub eLbl_DblClick(ByVal Cancel As MSForms.ReturnBoolean)
+    modUI.SplitMouse Name, "dbl", 0, 0
 End Sub
 
 Private Sub eChk_Click()

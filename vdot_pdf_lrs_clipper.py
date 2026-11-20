@@ -1377,7 +1377,9 @@ QProgressBar::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 %(
 QFrame#statusbar { background: %(statusbar)s; border-top: 1px solid %(border)s; }
 QFrame#viewbar { background: %(viewbar)s; border-bottom: 1px solid %(border)s; }
 QGraphicsView { background: %(canvas)s; border: none; }
-QSplitter::handle { background: %(border)s; width: 1px; }
+QSplitter::handle { background: %(border)s; }
+QSplitter::handle:horizontal { width: 7px; }
+QSplitter::handle:hover, QSplitter::handle:pressed { background: %(accent)s; }
 QToolTip { background: %(tip_bg)s; color: %(tip_fg)s; border: 1px solid %(tip_bd)s; padding: 6px; }
 QScrollBar:vertical { background: transparent; width: 10px; }
 QScrollBar::handle:vertical { background: %(scroll)s; border-radius: 5px; min-height: 30px; }
@@ -1424,6 +1426,37 @@ def pal():
 
 def style_for(theme):
     return STYLE_TEMPLATE % THEMES[theme]
+
+
+class _GripHandle(QtWidgets.QSplitterHandle):
+    """Splitter handle with a visible grip; double-click resets the sidebar width."""
+
+    def __init__(self, orientation, parent):
+        super().__init__(orientation, parent)
+        self.setCursor(QtCore.Qt.SplitHCursor)
+        self.setToolTip("Drag to resize the panel (double-click to reset)")
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor(140, 140, 140, 220))
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        for dy in (-10, -5, 0, 5, 10):
+            p.drawEllipse(QtCore.QPointF(cx, cy + dy), 1.5, 1.5)
+        p.end()
+
+    def mouseDoubleClickEvent(self, ev):
+        sp = self.splitter()
+        tot = sum(sp.sizes())
+        sp.setSizes([420, max(400, tot - 420)])
+        sp.splitterMoved.emit(420, 1)
+
+
+class GripSplitter(QtWidgets.QSplitter):
+    def createHandle(self):
+        return _GripHandle(self.orientation(), self)
 
 
 class Card(QtWidgets.QFrame):
@@ -1824,15 +1857,17 @@ class GeorefWindow(QtWidgets.QWidget):
         hl.addWidget(self.gcs_chip)
         root.addWidget(hdr)
 
-        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        split = GripSplitter(QtCore.Qt.Horizontal)
         split.setChildrenCollapsible(False)
+        split.setHandleWidth(7)
         root.addWidget(split, 1)
+        self.split = split
 
         # ---- sidebar
         side = QtWidgets.QScrollArea()
         side.setWidgetResizable(True)
-        side.setMinimumWidth(390)
-        side.setMaximumWidth(470)
+        side.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        side.setMinimumWidth(300)
         sw = QtWidgets.QWidget()
         sl = QtWidgets.QVBoxLayout(sw)
         sl.setContentsMargins(14, 14, 10, 14)
@@ -2110,6 +2145,15 @@ class GeorefWindow(QtWidgets.QWidget):
         split.addWidget(right)
         split.setStretchFactor(1, 1)
         split.setSizes([420, 1060])
+        side.setMinimumWidth(max(300, sw.minimumSizeHint().width() + 14))
+        try:
+            sw0 = int(self._settings.value("sidebar_width", 0) or 0)
+        except (TypeError, ValueError):
+            sw0 = 0
+        if sw0 >= 300:
+            split.setSizes([sw0, max(400, 1480 - sw0)])
+        split.splitterMoved.connect(
+            lambda *_: self._settings.setValue("sidebar_width", split.sizes()[0]))
 
         # ---- status bar + log
         sb = QtWidgets.QFrame()

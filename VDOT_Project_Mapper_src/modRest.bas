@@ -3,6 +3,7 @@ Attribute VB_Name = "modRest"
 Option Explicit
 
 Public Const JURIS_URL As String = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/VA_Jurisdictions/FeatureServer/0"
+Public Const DISTRICT_URL As String = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/VDOTAdministrativeBoundaries/FeatureServer/2"
 Public Const LRS_URL As String = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/LRS_Route_Master/FeatureServer/0"
 
 Public Function UrlEnc(ByVal s As String) As String
@@ -128,16 +129,45 @@ Public Function ListJurisdictions() As Collection
     Set ListJurisdictions = out
 End Function
 
-'Rings (lon/lat) of the jurisdiction polygon. Returns ring count.
+'VDOT district boundaries as jurisdiction-like records (negative OBJECTIDs).
+Public Function ListDistricts() As Collection
+    Dim out As New Collection, js As Object, feats As Variant, i As Long, prm As Object, a As Object, d As Object, nm As String
+    Set prm = CreateObject("Scripting.Dictionary")
+    prm("where") = "1=1"
+    prm("outFields") = "OBJECTID,DISTRICT_NAME,DISTRICT_CODE"
+    prm("returnGeometry") = "false"
+    prm("orderByFields") = "DISTRICT_CODE"
+    Set js = ArcQuery(DISTRICT_URL, prm)
+    feats = DGet(js, "features", Array())
+    For i = 0 To UBound(feats)
+        Set a = feats(i)("attributes")
+        nm = Trim$(Replace(CStr(DGet(a, "DISTRICT_NAME", "")), "  ", " "))
+        If Len(nm) Then
+            Set d = CreateObject("Scripting.Dictionary")
+            d("OBJECTID") = -CLng(DGet(a, "OBJECTID", 0))
+            d("NAME") = nm
+            d("NAMELSAD") = nm & " District"
+            d("JURISTYPE") = "DI"
+            d("VDOT_CODE") = ""
+            d("STCOFIPS") = ""
+            d("DISTRICT") = nm
+            d("DISTRICT_CODE") = DGet(a, "DISTRICT_CODE", "")
+            out.Add d
+        End If
+    Next
+    Set ListDistricts = out
+End Function
+
+'Rings (lon/lat) of the jurisdiction polygon (negative id = VDOT district). Returns ring count.
 Public Function GetBoundary(ByVal objectId As Long, ByVal outSR As Long, rings() As TPoly) As Long
     Dim prm As Object, js As Object, feats As Variant, rr As Variant, i As Long, j As Long, n As Long
     Set prm = CreateObject("Scripting.Dictionary")
-    prm("where") = "OBJECTID=" & objectId
-    prm("outFields") = "OBJECTID,NAMELSAD"
+    prm("where") = "OBJECTID=" & Abs(objectId)
+    prm("outFields") = "OBJECTID"
     prm("returnGeometry") = "true"
     prm("outSR") = CStr(outSR)
     prm("geometryPrecision") = "8"
-    Set js = ArcQuery(JURIS_URL, prm)
+    Set js = ArcQuery(IIf(objectId < 0, DISTRICT_URL, JURIS_URL), prm)
     feats = DGet(js, "features", Array())
     If UBound(feats) < 0 Then Err.Raise vbObjectError + 601, "REST", "Boundary not found (OBJECTID=" & objectId & ")"
     rr = feats(0)("geometry")("rings")

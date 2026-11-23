@@ -1,22 +1,22 @@
-Attribute VB_Name = "VdotGeoref"
+Attribute VB_Name = "VdotProjectMapper"
 '======================================================================
-' VDOT Map Georeferencer - MicroStation VBA launcher
+' VDOT Project Mapper - MicroStation VBA launcher
 ' Created by Robert Ratliff  -  Build 2026-11-19
 '
-' Starts the VDOT Map Georeferencer (vdot_pdf_lrs_clipper.py) inside
+' Starts the VDOT Project Mapper (vdot_project_mapper.py) inside
 ' MicroStation / OpenRoads Designer, so the UI and behaviour are exactly
 ' the Python tool's (block fence in the PDF viewer, scale bar & north
 ' arrow, county mask, hidden PDF, light/dark themes).
 ' Older copies of the script (without the block fence) are skipped.
 '
-' Run:    vba run [VDOT_Georef]VdotGeoref.Main
-'   or    Utilities > Macro > Macros... > VDOT_Georef > Main
+' Run:    vba run [VDOT_Project_Mapper_Launcher]VdotProjectMapper.Main
+'   or    Utilities > Macro > Macros... > VDOT_Project_Mapper_Launcher > Main
 '======================================================================
 Option Explicit
 
-Private Const SCRIPT_NAME As String = "vdot_pdf_lrs_clipper.py"
-Private Const APP_TITLE As String = "VDOT Map Georeferencer"
-Private Const REG_APP As String = "VDOT_Georef"
+Private Const SCRIPT_NAME As String = "vdot_project_mapper.py"
+Private Const APP_TITLE As String = "VDOT Project Mapper"
+Private Const REG_APP As String = "VDOT_Project_Mapper_Launcher"
 ' Text only the current script version contains (block fence tool).
 Private Const REQUIRED_MARK As String = "MODE_FENCE"
 
@@ -37,7 +37,7 @@ Public Sub Main()
     WriteLog
     If Len(path) = 0 Then
         MsgBox SCRIPT_NAME & " was not found." & vbCrLf & vbCrLf & _
-               "Run Install.bat from the VDOT_PDF_Georef_Installer package, " & _
+               "Run Install.bat from the VDOT_Project_Mapper_Installer package, " & _
                "or copy the script into the WorkSet or Organization Macros folder." & vbCrLf & vbCrLf & _
                "Folders searched are listed in " & LogPath(), vbExclamation, APP_TITLE
         Exit Sub

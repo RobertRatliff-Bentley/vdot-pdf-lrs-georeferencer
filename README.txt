@@ -1,4 +1,4 @@
-VDOT PDF Map Georeferencer for MicroStation
+VDOT Project Mapper for MicroStation
 Created by Robert Ratliff
 
 REQUIREMENTS
@@ -11,9 +11,9 @@ INSTALL (no internet needed)
   2. Double-click Install.bat and allow Administrator access.
      - Installs the bundled Python libraries (PyMuPDF, numpy, pyproj, shapely and their
        dependencies) into C:\ProgramData\Bentley\PowerPlatformPython.
-     - Copies vdot_pdf_lrs_clipper.py and the VBA macro VDOT_Georef.mvba into every
+     - Copies vdot_project_mapper.py and the VBA macro VDOT_Project_Mapper_Launcher.mvba into every
        C:\ProgramData\Bentley\<product>\Configuration\Organization\Macros folder and adds
-       vdot_pdf_georef.cfg so the macro is found from any WorkSet.
+       vdot_project_mapper.cfg so the macro is found from any WorkSet.
   3. Restart MicroStation.
 
   Custom/network Organization folder:
@@ -21,21 +21,21 @@ INSTALL (no internet needed)
 
 RUN
   Open a DGN with a geographic coordinate system and key in:
-     python load vdot_pdf_lrs_clipper.py
+     python load vdot_project_mapper.py
   or run the VBA macro (same window and behaviour - it starts the Python tool):
-     vba run [VDOT_Georef]VdotGeoref.Main
-     (or Utilities > Macro > Macros... > VDOT_Georef > Main; this key-in can be put on a
+     vba run [VDOT_Project_Mapper_Launcher]VdotProjectMapper.Main
+     (or Utilities > Macro > Macros... > VDOT_Project_Mapper_Launcher > Main; this key-in can be put on a
       toolbar button or function key)
-  VdotGeoref.bas is the VBA source of the macro.
+  VdotProjectMapper.bas is the VBA source of the macro.
 
 NATIVE VBA VERSION (no Python required)
-  VDOT_Georef_Native.mvba is a stand-alone VBA rewrite of the tool with the same window,
+  VDOT_Project_Mapper.mvba is a stand-alone VBA rewrite of the tool with the same window,
   cards, PDF viewer tools (pan, adjust, tie points, block fence), auto-align, routes,
   masked PNG + hidden PDF placement, scale bar and north arrow. It does not need Python
   or the bundled libraries - it only needs MicroStation/OpenRoads and internet access.
-     vba run [VDOT_Georef_Native]modMain.Main
+     vba run [VDOT_Project_Mapper]modMain.Main
   Differences: the viewer zooms with the toolbar buttons (no mouse wheel); page 1 of the PDF
-  is used. VDOT_Georef_Native_src\ holds the VBA source modules.
+  is used. VDOT_Project_Mapper_src\ holds the VBA source modules.
   Log: %TEMP%\vdot_georef_native.log
 
 UNINSTALL
@@ -44,6 +44,13 @@ UNINSTALL
 LOGS
   %TEMP%\vdot_georef_install.log   (installer)
   %TEMP%\vdot_georef.log           (tool)
+
+VDOT districts
+  The type drop-down in the Jurisdiction card also lists 'Districts' (the 9 VDOT district
+  boundaries from the VDOTAdministrativeBoundaries REST service) and one entry per district
+  (Bristol, Salem, Lynchburg, Richmond, Hampton Roads, Fredericksburg, Culpeper, Staunton,
+  Northern Virginia). Picking a district lists its boundary first, then its counties, cities
+  and towns; load the district boundary to clip/align to a whole district map.
 
 Scale bar & north arrow
   Tick 'Scale bar & north arrow' in the Output card to place a round-length scale bar

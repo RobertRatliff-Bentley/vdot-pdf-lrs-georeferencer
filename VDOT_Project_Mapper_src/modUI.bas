@@ -1,6 +1,6 @@
 Attribute VB_Name = "modUI"
 'Runtime-built modern UI for frmGeoref: header, step cards, preview viewbar, status bar and log.
-'Mirrors the layout, texts and themes of the Python tool (vdot_pdf_lrs_clipper.py).
+'Mirrors the layout, texts and themes of the Python tool (vdot_project_mapper.py).
 Option Explicit
 
 Private Type OFNW
@@ -349,11 +349,17 @@ Public Sub BuildUI(ByVal frm As Object)
 
     ' 2 Jurisdiction
     Set f = CardFrame(2, "Jurisdiction boundary", T, 214)
-    Add f, "Forms.TextBox.1", "txtSearch", "input", PAD, 34, IW - 84, 20
+    Add f, "Forms.TextBox.1", "txtSearch", "input", PAD, 34, IW - 124, 20
     Placeholder f, "txtSearch", ChrW(&H2315) & "  Search counties, cities, towns" & UEll()
-    Set o = Add(f, "Forms.ComboBox.1", "cboType", "input", PAD + IW - 78, 34, 78, 20)
+    Set o = Add(f, "Forms.ComboBox.1", "cboType", "input", PAD + IW - 118, 34, 118, 20)
     o.Style = 2
-    o.AddItem "All": o.AddItem "Counties": o.AddItem "Cities": o.AddItem "Towns"
+    o.ListRows = 14
+    o.ListWidth = 176
+    o.ControlTipText = "Filter by type, show the 9 VDOT district boundaries, or list the jurisdictions in one district"
+    o.AddItem "All": o.AddItem "Counties": o.AddItem "Cities": o.AddItem "Towns": o.AddItem "Districts"
+    For i = 1 To 9
+        o.AddItem VdotDistrict(i) & " District"
+    Next
     mSilent = True: o.ListIndex = 1: mSilent = False
     Set o = Add(f, "Forms.ListBox.1", "lstJuris", "input", PAD, 60, IW, 114)
     o.IntegralHeight = False
@@ -1053,19 +1059,41 @@ Private Function TypeLabel(ByVal t As String) As String
         Case "CO": TypeLabel = "County"
         Case "CI": TypeLabel = "City"
         Case "TO": TypeLabel = "Town"
+        Case "DI": TypeLabel = "District"
+    End Select
+End Function
+
+'VDOT districts in district-code order (1-9).
+Public Function VdotDistrict(ByVal i As Long) As String
+    VdotDistrict = Choose(i, "Bristol", "Salem", "Lynchburg", "Richmond", "Hampton Roads", _
+                          "Fredericksburg", "Culpeper", "Staunton", "Northern Virginia")
+End Function
+
+Private Function NormDistrict(ByVal s As String) As String
+    s = LCase$(Trim$(Replace(s, "Northerin", "Northern")))
+    If Right$(s, 9) = " district" Then s = Left$(s, Len(s) - 9)
+    NormDistrict = s
+End Function
+
+Private Function JurisMatches(ByVal j As Object) As Boolean
+    Dim idx As Long, jt As String
+    idx = C("cboType").ListIndex
+    jt = CStr(DGet(j, "JURISTYPE", ""))
+    Select Case idx
+        Case Is <= 0: JurisMatches = True
+        Case 1: JurisMatches = (jt = "CO")
+        Case 2: JurisMatches = (jt = "CI")
+        Case 3: JurisMatches = (jt = "TO")
+        Case 4: JurisMatches = (jt = "DI")
+        Case Else: JurisMatches = (NormDistrict(CStr(DGet(j, "DISTRICT", ""))) = NormDistrict(VdotDistrict(idx - 4)))
     End Select
 End Function
 
 Public Sub FilterJuris()
-    Dim txt As String, typ As String, cur As Variant, j As Variant, nm As String, code As String
-    Dim lst As Object, sel As Long
+    Dim txt As String, cur As Variant, j As Variant, nm As String, code As String
+    Dim lst As Object, sel As Long, pass As Long, isDi As Boolean
     If Not FormIsOpen() Or gJuris Is Nothing Then Exit Sub
     txt = LCase$(Trim$(C("txtSearch").text))
-    Select Case C("cboType").ListIndex
-        Case 1: typ = "CO"
-        Case 2: typ = "CI"
-        Case 3: typ = "TO"
-    End Select
     Set lst = C("lstJuris")
     cur = Empty
     If lst.ListIndex >= 0 Then cur = DGet(mListJ(lst.ListIndex + 1), "OBJECTID", Empty)
@@ -1073,8 +1101,11 @@ Public Sub FilterJuris()
     lst.Clear
     Set mListJ = New Collection
     sel = -1
+    'Pass 0 lists district boundaries first, pass 1 everything else.
+    For pass = 0 To 1
     For Each j In gJuris
-        If Len(typ) = 0 Or CStr(DGet(j, "JURISTYPE", "")) = typ Then
+        isDi = (CStr(DGet(j, "JURISTYPE", "")) = "DI")
+        If isDi = (pass = 0) And JurisMatches(j) Then
             nm = CStr(DGet(j, "NAMELSAD", ""))
             If Len(nm) = 0 Then nm = CStr(DGet(j, "NAME", "?"))
             code = CStr(DGet(j, "VDOT_CODE", ""))
@@ -1088,23 +1119,17 @@ Public Sub FilterJuris()
             End If
         End If
     Next
+    Next pass
     If sel >= 0 Then lst.ListIndex = sel
     mSilent = False
     UpdateState
 End Sub
 
 Public Sub SelectJuris(ByVal j As Object)
-    Dim typ As String, i As Long, lst As Object
+    Dim i As Long, lst As Object
     If Not FormIsOpen() Then Exit Sub
-    Select Case C("cboType").ListIndex
-        Case 1: typ = "CO"
-        Case 2: typ = "CI"
-        Case 3: typ = "TO"
-    End Select
     mSilent = True
-    If Len(typ) Then
-        If CStr(DGet(j, "JURISTYPE", "")) <> typ Then C("cboType").ListIndex = 0
-    End If
+    If Not JurisMatches(j) Then C("cboType").ListIndex = 0
     C("txtSearch").text = ""
     SyncPlaceholder "txtSearch"
     mSilent = False

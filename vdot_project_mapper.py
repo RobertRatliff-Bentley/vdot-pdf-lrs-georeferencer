@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-VDOT PDF Map Georeferencer & Clipper for MicroStation
+VDOT Project Mapper - PDF map georeferencer & clipper for MicroStation
 =====================================================
 Created by Robert Ratliff  ·  Build 2026-11-18
 
@@ -21,7 +21,7 @@ Requirements
     or PyMuPDF for PDF rendering; shapely is optional (route clipping).
 
 Run
-  Key-in:  python load "<path>\\vdot_pdf_lrs_clipper.py"   (or Python Manager)
+  Key-in:  python load "<path>\\vdot_project_mapper.py"   (or Python Manager)
 """
 
 import sys
@@ -91,7 +91,7 @@ except Exception:
     HAVE_SHAPELY = False
 
 
-APP_TITLE = "VDOT Map Georeferencer"
+APP_TITLE = "VDOT Project Mapper"
 APP_VERSION = "1.0"
 APP_AUTHOR = "Robert Ratliff"
 BUILD_DATE = "2026-11-19"
@@ -162,7 +162,17 @@ def vdot_logo_pixmap(height=None):
 JURIS_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/VA_Jurisdictions/FeatureServer/0"
 LRS_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/LRS_Route_Master/FeatureServer/0"
 
-JURIS_TYPES = {"CO": "County", "CI": "City", "TO": "Town"}
+JURIS_TYPES = {"CO": "County", "CI": "City", "TO": "Town", "DI": "District"}
+DISTRICT_URL = ("https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/"
+                "VDOTAdministrativeBoundaries/FeatureServer/2")
+# VDOT construction districts in district-code order (1-9).
+VDOT_DISTRICTS = ["Bristol", "Salem", "Lynchburg", "Richmond", "Hampton Roads",
+                  "Fredericksburg", "Culpeper", "Staunton", "Northern Virginia"]
+
+
+def norm_district(name):
+    s = " ".join(str(name or "").replace("Northerin", "Northern").split()).lower()
+    return s[:-len(" district")] if s.endswith(" district") else s
 
 # group label -> (RTE_CATEGORY_NM values, default on, MicroStation color, weight, preview color)
 ROUTE_GROUPS = [
@@ -325,9 +335,28 @@ class VdotRestClient:
             offset += len(feats)
         return out
 
+    def list_districts(self):
+        """VDOT district boundaries as jurisdiction-like records (negative OBJECTIDs)."""
+        js = self._query(DISTRICT_URL, {
+            "where": "1=1", "outFields": "OBJECTID,DISTRICT_NAME,DISTRICT_CODE",
+            "returnGeometry": "false", "orderByFields": "DISTRICT_CODE"})
+        out = []
+        for f in js.get("features", []):
+            a = f["attributes"]
+            name = " ".join(str(a.get("DISTRICT_NAME") or "").split())
+            if not name:
+                continue
+            out.append({"OBJECTID": -int(a["OBJECTID"]), "NAME": name,
+                        "NAMELSAD": name + " District", "JURISTYPE": "DI",
+                        "VDOT_CODE": "", "STCOFIPS": "", "DISTRICT": name,
+                        "DISTRICT_CODE": a.get("DISTRICT_CODE")})
+        return out
+
     def get_boundary(self, objectid, out_sr=4269):
-        js = self._query(JURIS_URL, {
-            "where": "OBJECTID=%d" % int(objectid), "outFields": "OBJECTID,NAMELSAD",
+        objectid = int(objectid)
+        url = DISTRICT_URL if objectid < 0 else JURIS_URL
+        js = self._query(url, {
+            "where": "OBJECTID=%d" % abs(objectid), "outFields": "OBJECTID",
             "returnGeometry": "true", "outSR": out_sr, "geometryPrecision": 8})
         feats = js.get("features", [])
         if not feats:
@@ -2134,7 +2163,13 @@ class GeorefWindow(QtWidgets.QWidget):
         self.ed_search.setPlaceholderText("🔍  Search counties, cities, towns…")
         self.ed_search.textChanged.connect(self.filter_juris)
         self.cb_type = QtWidgets.QComboBox()
-        self.cb_type.addItems(["All", "Counties", "Cities", "Towns"])
+        self.cb_type.addItems(["All", "Counties", "Cities", "Towns", "Districts"] +
+                              ["%s District" % d for d in VDOT_DISTRICTS])
+        self.cb_type.setToolTip("Filter by type, show the 9 VDOT district boundaries, "
+                                "or list the jurisdictions in one district")
+        self.cb_type.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cb_type.setMinimumContentsLength(12)
+        self.cb_type.view().setMinimumWidth(self.cb_type.fontMetrics().horizontalAdvance("Northern Virginia District") + 40)
         self.cb_type.setCurrentIndex(1)
         self.cb_type.currentIndexChanged.connect(lambda _: self.filter_juris())
         row.addWidget(self.ed_search, 1)
@@ -2533,21 +2568,36 @@ class GeorefWindow(QtWidgets.QWidget):
     def load_jurisdictions(self):
         with self.busy("Loading Virginia jurisdictions from VDOT…"):
             self.juris = self.run_bg(self.client.list_jurisdictions)
-            self.lb_juris.setText("%d jurisdictions available" % len(self.juris))
-            self.log("Loaded %d jurisdictions." % len(self.juris), "ok")
+            try:
+                dist = self.run_bg(self.client.list_districts)
+            except Exception as ex:
+                dist = []
+                self.log("Could not load VDOT districts: %s" % ex, "warn")
+            self.juris = self.juris + dist
+            self.lb_juris.setText("%d jurisdictions, %d districts available" % (len(self.juris) - len(dist), len(dist)))
+            self.log("Loaded %d jurisdictions and %d VDOT districts." % (len(self.juris) - len(dist), len(dist)), "ok")
             self.filter_juris()
             if self.pdf_path:
                 self.autodetect_juris()
 
+    def _juris_matches(self, j):
+        idx = self.cb_type.currentIndex()
+        jt = j.get("JURISTYPE")
+        if idx <= 0:
+            return True
+        if idx <= 4:
+            return jt == {1: "CO", 2: "CI", 3: "TO", 4: "DI"}[idx]
+        return norm_district(j.get("DISTRICT")) == norm_district(VDOT_DISTRICTS[idx - 5])
+
     @ui_action
     def filter_juris(self):
         txt = self.ed_search.text().strip().lower()
-        typ = {1: "CO", 2: "CI", 3: "TO"}.get(self.cb_type.currentIndex())
         cur = self.lst_juris.currentItem().data(QtCore.Qt.UserRole)["OBJECTID"] if self.lst_juris.currentItem() else None
         self.lst_juris.clear()
-        for j in self.juris:
-            if typ and j.get("JURISTYPE") != typ:
-                continue
+        rows = [j for j in self.juris if self._juris_matches(j)]
+        if self.cb_type.currentIndex() >= 5:  # district boundary first, then its jurisdictions
+            rows.sort(key=lambda j: j.get("JURISTYPE") != "DI")
+        for j in rows:
             name = j.get("NAMELSAD") or j.get("NAME") or "?"
             code = j.get("VDOT_CODE") or ""
             if txt and txt not in name.lower() and txt not in str(code):
@@ -2562,7 +2612,7 @@ class GeorefWindow(QtWidgets.QWidget):
         self.update_state()
 
     def select_juris(self, j):
-        if j.get("JURISTYPE") != {1: "CO", 2: "CI", 3: "TO"}.get(self.cb_type.currentIndex(), j.get("JURISTYPE")):
+        if not self._juris_matches(j):
             self.cb_type.setCurrentIndex(0)
         self.ed_search.clear()
         self.filter_juris()
@@ -2574,10 +2624,11 @@ class GeorefWindow(QtWidgets.QWidget):
                 break
 
     def autodetect_juris(self):
-        j, src = guess_jurisdiction(self.pdf_path, self.juris), "file name"
+        juris = [x for x in self.juris if x.get("JURISTYPE") != "DI"]
+        j, src = guess_jurisdiction(self.pdf_path, juris), "file name"
         if j is None:
             pg = int(self.pdf_info["page"]) if self.pdf_info else 0
-            j, src = guess_jurisdiction_from_text(self.pdf_path, pg, self.juris), "PDF title text"
+            j, src = guess_jurisdiction_from_text(self.pdf_path, pg, juris), "PDF title text"
         if j is None:
             self.lb_juris.setText("Could not detect jurisdiction from the file name or PDF text – pick it from the list.")
             return False

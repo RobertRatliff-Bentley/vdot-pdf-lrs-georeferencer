@@ -1,5 +1,5 @@
 @echo off
-rem VDOT PDF Map Georeferencer - installer launcher (requests Administrator rights)
+rem VDOT Project Mapper - installer launcher (requests Administrator rights)
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo Requesting Administrator rights...

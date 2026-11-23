@@ -1,6 +1,6 @@
 Attribute VB_Name = "modMain"
-'VDOT Map Georeferencer - native MicroStation VBA edition (no Python required).
-'Run with:  vba run [VDOT_Georef_Native]modMain.Main
+'VDOT Project Mapper - native MicroStation VBA edition (no Python required).
+'Run with:  vba run [VDOT_Project_Mapper]modMain.Main
 Option Explicit
 
 #If VBA7 Then
@@ -13,7 +13,7 @@ Public Declare Function GetTickCount Lib "kernel32" () As Long
 Public Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (Destination As Any, Source As Any, ByVal Length As Long)
 #End If
 
-Public Const APP_TITLE As String = "VDOT Map Georeferencer"
+Public Const APP_TITLE As String = "VDOT Project Mapper"
 Public Const APP_VERSION As String = "1.0"
 Public Const REG_APP As String = "VDOT_Georef_Native"
 Public Const PREVIEW_DPI As Long = 48
@@ -202,8 +202,18 @@ Public Sub DoLoadJurisdictions()
     On Error GoTo EH
     BusyOn "Loading Virginia jurisdictions from VDOT" & UEll()
     Set gJuris = ListJurisdictions()
-    SetCap "lblJuris", gJuris.Count & " jurisdictions available"
-    LogMsg "Loaded " & gJuris.Count & " jurisdictions.", "ok"
+    Dim nJ As Long, dist As Collection, dj As Variant
+    nJ = gJuris.Count
+    On Error Resume Next
+    Set dist = ListDistricts()
+    If Err.Number <> 0 Then LogMsg "Could not load VDOT districts: " & Err.Description, "warn": Set dist = New Collection
+    Err.Clear
+    On Error GoTo EH
+    For Each dj In dist
+        gJuris.Add dj
+    Next
+    SetCap "lblJuris", nJ & " jurisdictions, " & dist.Count & " districts available"
+    LogMsg "Loaded " & nJ & " jurisdictions and " & dist.Count & " VDOT districts.", "ok"
     FilterJuris
     BusyOff
     If gHasPdf Then AutodetectJuris
@@ -274,6 +284,7 @@ Public Function GuessJurisdiction(ByVal pdfPath As String) As Object
         bestScore = -1
         For Each j In gJuris
             nm = LCase$(CStr(DGet(j, "NAME", "")))
+            If CStr(DGet(j, "JURISTYPE", "")) = "DI" Then nm = ""
             If Len(nm) > 0 Then
                 If WholeWord(" " & text & " ", nm) Then
                     sc = Len(nm)
@@ -798,7 +809,7 @@ Public Sub DoDeletePlaced()
     If MsgBox("Delete " & (els.Count - nRast) & " element(s) from the active model and detach " & nRast & _
               " raster attachment(s)?" & vbLf & vbLf & "Levels:" & lst & vbLf & vbLf & _
               "Anything else you drew on these levels is deleted too. Use MicroStation Undo to reverse.", _
-              vbYesNo + vbExclamation + vbDefaultButton2, "VDOT Map Georeferencer") <> vbYes Then Exit Sub
+              vbYesNo + vbExclamation + vbDefaultButton2, APP_TITLE) <> vbYes Then Exit Sub
     BusyOn "Deleting placed drawing" & UEll(), 0
     nDel = RemoveElements(els)
     BusyOff

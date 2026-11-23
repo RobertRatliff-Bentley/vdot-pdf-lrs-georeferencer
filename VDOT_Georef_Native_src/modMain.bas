@@ -762,6 +762,47 @@ EH:
     LogMsg Err.Description, "err"
 End Sub
 
+'---------------------------------------------------------------- delete placed drawing
+Public Sub DoDeletePlaced()
+    Dim defs As Variant, names() As String, n As Long, i As Long, g As Long, s As String
+    Dim els As New Collection, nRast As Long, nDel As Long, lst As String
+    On Error GoTo EH
+    defs = Array("VDOT_LRS_Boundary", "VDOT_LRS_Routes", "VDOT_PDF_Map", "VDOT_Map_Annotation")
+    ReDim names(0 To 3 + NGRP)
+    For i = 0 To 3
+        s = Trim$(GetCap("txtLv" & i))
+        If Len(s) = 0 Then s = defs(i)
+        names(i) = s
+    Next
+    n = 4
+    For g = 0 To NGRP - 1
+        names(n) = RouteLevelName(names(1), g): n = n + 1
+    Next
+    CollectOnLevels names, n, els, nRast
+    If els.Count = 0 Then
+        LogMsg "Nothing to delete " & UDash() & " no elements on this tool's levels in the active model.", "warn"
+        Exit Sub
+    End If
+    For i = 0 To n - 1: lst = lst & vbLf & "  " & names(i): Next
+    If MsgBox("Delete " & (els.Count - nRast) & " element(s) from the active model and detach " & nRast & _
+              " raster attachment(s)?" & vbLf & vbLf & "Levels:" & lst & vbLf & vbLf & _
+              "Anything else you drew on these levels is deleted too. Use MicroStation Undo to reverse.", _
+              vbYesNo + vbExclamation + vbDefaultButton2, "VDOT Map Georeferencer") <> vbYes Then Exit Sub
+    BusyOn "Deleting placed drawing" & UEll(), 0
+    nDel = RemoveElements(els)
+    BusyOff
+    If nDel = els.Count Then
+        LogMsg "Deleted " & (nDel - nRast) & " element(s); " & nRast & " raster attachment(s) detached.", "ok"
+    Else
+        LogMsg "Deleted " & nDel & " of " & els.Count & " element(s); some could not be deleted.", "warn"
+    End If
+    CardDone 5, "deleted", False
+    Exit Sub
+EH:
+    BusyOff
+    LogMsg Err.Description, "err"
+End Sub
+
 '---------------------------------------------------------------- misc
 Public Function FileTitle(ByVal p As String) As String
     FileTitle = Mid$(p, InStrRev(p, "\") + 1)

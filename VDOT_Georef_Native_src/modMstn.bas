@@ -497,6 +497,56 @@ Private Sub DetachHiddenPdf()
     Err.Clear
 End Sub
 
+'---------------------------------------------------------------- delete placed drawing
+'Collects the active model's elements on the given levels (raster attachments via Raster Manager).
+Public Sub CollectOnLevels(names() As String, ByVal n As Long, els As Collection, nRast As Long)
+    Dim seen As Object, i As Long, sc As ElementScanCriteria, ee As ElementEnumerator, el As Element
+    Dim r As Raster, nm As String, key As String, anyLv As Boolean, lv As Level
+    Set seen = CreateObject("Scripting.Dictionary"): seen.CompareMode = 1
+    For i = 0 To n - 1: seen("lv:" & names(i)) = True: Next
+    On Error Resume Next
+    For i = 1 To RasterManager.Rasters.Count
+        Set r = RasterManager.Rasters(i)
+        Set el = Nothing
+        Set el = RasterManager.Rasters.GetElementFromRaster(r)
+        If Not el Is Nothing Then
+            nm = "": nm = el.Level.Name
+            key = DLongToString(el.ID)
+            If seen.Exists("lv:" & nm) And Not seen.Exists(key) Then
+                seen(key) = True: els.Add el: nRast = nRast + 1
+            End If
+        End If
+    Next
+    Err.Clear
+    Set sc = New ElementScanCriteria
+    sc.ExcludeAllLevels
+    For i = 0 To n - 1
+        Set lv = Nothing
+        Set lv = ActiveDesignFile.Levels(names(i))
+        If Not lv Is Nothing Then sc.IncludeLevel lv: anyLv = True
+    Next
+    Err.Clear
+    On Error GoTo 0
+    If Not anyLv Then Exit Sub
+    Set ee = ActiveModelReference.Scan(sc)
+    Do While ee.MoveNext
+        Set el = ee.Current
+        key = DLongToString(el.ID)
+        If el.Type <> 94 And Not seen.Exists(key) Then seen(key) = True: els.Add el
+    Loop
+End Sub
+
+Public Function RemoveElements(els As Collection) As Long
+    Dim e As Variant
+    On Error Resume Next
+    For Each e In els
+        Err.Clear
+        ActiveModelReference.RemoveElement e
+        If Err.Number = 0 Then RemoveElements = RemoveElements + 1
+    Next
+    Err.Clear
+End Function
+
 '---------------------------------------------------------------- vector elements
 Public Function GetLevel(ByVal nm As String) As Level
     Dim lv As Level

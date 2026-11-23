@@ -1,6 +1,6 @@
 ﻿# VDOT PDF LRS Georeferencer for MicroStation / OpenRoads Designer
 
-Georeferences VDOT county PDF maps in MicroStation 2026 / OpenRoads Designer 25 using the VDOT LRS ArcGIS REST service: auto-aligns the PDF to the county boundary, clips it, and places the map image, boundary, per-class LRS route levels, scale bar and north arrow.
+Georeferences VDOT county PDF maps in MicroStation 2026 / OpenRoads Designer 25 using the VDOT LRS ArcGIS REST service: auto-aligns the PDF to the county boundary, clips it, and places the map image, boundary, per-class LRS route levels, scale bar and north arrow. **Delete placed drawing & rasters** removes everything on the tool's levels in the active model and detaches its raster attachments (undoable).
 
 ## Demo
 

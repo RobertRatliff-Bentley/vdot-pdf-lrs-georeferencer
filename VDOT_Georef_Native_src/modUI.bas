@@ -239,6 +239,8 @@ Private Sub StyleBtn(ByVal nm As String)
                 b = PalC("dis_bg"): bd = PalC("dis_bd"): fg = PalC("dis_fg")
             ElseIf ck Then
                 b = PalC("sel_bg"): bd = PalC("accent"): fg = PalC("sel_fg")
+            ElseIf role = "danger" Then
+                b = IIf(hv, PalC("btn_hover"), PalC("btn")): bd = RGB(220, 38, 38): fg = RGB(239, 68, 68)
             ElseIf role = "accent" Then
                 b = IIf(hv, PalC("accent2_hover"), PalC("btn")): bd = PalC("accent2_bd"): fg = PalC("accent2_fg")
             Else
@@ -396,7 +398,7 @@ Public Sub BuildUI(ByVal frm As Object)
     T = T + 152 + 12
 
     ' 5 Output
-    Set f = CardFrame(5, "Place in MicroStation", T, 300)
+    Set f = CardFrame(5, "Place in MicroStation", T, 334)
     lv = Array("chkPlaceBnd", "Boundary shapes", True, "", _
                "chkPlaceRoutes", "LRS routes", True, "", _
                "chkPlaceRaster", "Map image", True, "Render the PDF page to a PNG (saved next to the PDF) and attach it georeferenced", _
@@ -423,9 +425,11 @@ Public Sub BuildUI(ByVal frm As Object)
         If i = 1 Then SetTip "lblLv1", "Prefix for the per-class route levels": SetTip "txtLv1", "Routes go on one level per LRS class: <prefix>_Interstate, _US_Primary, _State_Primary, _Secondary, _Ramps_Frontage, _Urban_Streets, _Other."
     Next
     AddBtn f, "btnPlace", "Place in MicroStation  " & ChrW(&H279C), "primary", PAD, 230, IW, 30
-    Set o = Add(f, "Forms.Label.1", "lblOut", "hint", PAD, 266, IW, 30, "")
+    AddBtn f, "btnDelete", ChrW(&H2715) & "  Delete placed drawing & rasters", "danger", PAD, 266, IW, 26, _
+        "Delete everything on this tool's boundary, route, raster and annotation levels in the active model and detach its raster attachments (asks first)."
+    Set o = Add(f, "Forms.Label.1", "lblOut", "hint", PAD, 300, IW, 30, "")
     o.WordWrap = True
-    T = T + 300 + 12
+    T = T + 334 + 12
     C("fraSide").ScrollHeight = T
     RecordAnchors
 
@@ -585,7 +589,7 @@ Private Sub RecordAnchors()
         "lblRoutes:S btnRoutes:R " & _
         "chkUseRoutes:R btnAuto:P btnRefine:P btnReset:P btnPan:P btnAdjust:P btnTie:P lblFit:S btnClearPins:R " & _
         "chkPlaceBnd:P chkPlaceRoutes:P chkPlaceRaster:P chkClip:P chkWhite:P chkHoles:P chkPdfOff:P chkScaleNorth:P " & _
-        "scrTransp:S lblTransp:R txtLv0:S txtLv1:S txtLv2:S txtLv3:S btnPlace:S lblOut:S", " ")
+        "scrTransp:S lblTransp:R txtLv0:S txtLv1:S txtLv2:S txtLv3:S btnPlace:S btnDelete:S lblOut:S", " ")
     For i = 0 To UBound(spec)
         p = InStr(spec(i), ":"): nm = Left$(spec(i), p - 1)
         isB = IsBtn(nm)
@@ -765,6 +769,7 @@ Public Sub OnEvent(ByVal nm As String, ByVal kind As String)
         Case "btnClearPins": DoClearPins
         Case "chkPlaceRaster": UpdateState
         Case "btnPlace": DoPlace
+        Case "btnDelete": DoDeletePlaced
         Case "btnFit": ViewFit
         Case "btnZoomIn": ViewZoom 1.25
         Case "btnZoomOut": ViewZoom 0.8

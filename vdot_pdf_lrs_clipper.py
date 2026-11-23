@@ -1445,6 +1445,43 @@ class MstnPlacer:
         except Exception:
             pass
 
+    def find_placed(self, level_names):
+        """Elements in the active model on the given levels. Returns (element refs, raster count)."""
+        lc = self.dgn.GetLevelCache()
+        ids = set()
+        for name in level_names:
+            lh = lc.GetLevelByName(name)
+            if lh.IsValid():
+                ids.add(lh.GetLevelId())
+        refs, n_rast, seen = [], 0, set()
+        if not ids:
+            return refs, n_rast
+        for ref in self.model.GetDgnModel().GetElementsCollection():  # graphic + control elements
+            try:
+                eh = ElementHandle(ref)
+                if not eh.IsValid() or ElementPropertiesGetter(eh).GetLevel() not in ids:
+                    continue
+                eid = ref.GetElementId()
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                refs.append(ref)
+                n_rast += int(eh.GetElementType()) == 94  # raster frame = raster attachment
+            except Exception as ex:
+                _log_console("Element scan: %s" % ex)
+        return refs, n_rast
+
+    def delete_refs(self, refs):
+        """Delete elements; deleting a raster frame detaches that raster."""
+        n = 0
+        for ref in refs:
+            try:
+                if EditElementHandle(ref, self.model).DeleteFromModel() == BentleyStatus.eSUCCESS:
+                    n += 1
+            except Exception as ex:
+                _log_console("Delete failed: %s" % ex)
+        return n
+
 
 # =============================================================================
 # UI
@@ -1483,6 +1520,9 @@ QPushButton#primary:hover { background: %(primary_hover)s; }
 QPushButton#primary:disabled { background: %(primary_dis_bg)s; color: %(primary_dis_fg)s; }
 QPushButton#accent { border-color: %(accent2_bd)s; color: %(accent2_fg)s; }
 QPushButton#accent:hover { background: %(accent2_hover)s; }
+QPushButton#danger { border-color: #dc2626; color: #ef4444; }
+QPushButton#danger:hover { background: rgba(220, 38, 38, 0.14); }
+QPushButton#danger:disabled { border-color: #6b7280; color: #9ca3af; }
 QPushButton#tool { padding: 5px 10px; }
 QCheckBox, QRadioButton { spacing: 8px; }
 QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; }
@@ -2257,6 +2297,12 @@ class GeorefWindow(QtWidgets.QWidget):
         self.bt_place.setObjectName("primary")
         self.bt_place.clicked.connect(self.place)
         c5.body.addWidget(self.bt_place)
+        self.bt_delete = QtWidgets.QPushButton("🗑  Delete placed drawing && rasters")
+        self.bt_delete.setObjectName("danger")
+        self.bt_delete.setToolTip("Delete everything on this tool's boundary, route, raster and annotation levels "
+                                  "in the active model and detach its raster attachments (asks first).")
+        self.bt_delete.clicked.connect(self.delete_placed)
+        c5.body.addWidget(self.bt_delete)
         self.lb_out = QtWidgets.QLabel("")
         self.lb_out.setObjectName("hint")
         self.lb_out.setWordWrap(True)
@@ -2465,6 +2511,7 @@ class GeorefWindow(QtWidgets.QWidget):
         self.bt_clear_pins.setEnabled(bool(self.pairs))
         ok_place = has_bnd and self.conv.ok and HAVE_MSTN and (has_G or not self.chk_place_raster.isChecked())
         self.bt_place.setEnabled(bool(ok_place))
+        self.bt_delete.setEnabled(bool(HAVE_MSTN))
         if not HAVE_MSTN:
             self.bt_place.setToolTip("MicroStation API unavailable – " +
                                      (MSTN_IMPORT_ERROR or "run inside MicroStation to place elements."))
@@ -3008,6 +3055,37 @@ class GeorefWindow(QtWidgets.QWidget):
             self.card_out.set_done("placed")
             self.log("Done – elements placed in %s." % ("model" if not HAVE_MSTN else
                                                        str(ISessionMgr.ActiveDgnModelRef.GetDgnModel().GetModelName())), "ok")
+
+    def placed_level_names(self):
+        lv = {k: (e.text().strip() or DEFAULT_LEVELS[k]) for k, e in self.ed_lv.items()}
+        names = [lv["boundary"], lv["routes"], lv["raster"], lv["annotation"]]
+        names += [route_level_name(lv["routes"], g[0]) for g in ROUTE_GROUPS]
+        return list(dict.fromkeys(names))
+
+    @ui_action
+    def delete_placed(self):
+        if not HAVE_MSTN:
+            self.log("MicroStation is not available.", "err")
+            return
+        placer = MstnPlacer()
+        names = self.placed_level_names()
+        refs, n_rast = placer.find_placed(names)
+        if not refs:
+            self.log("Nothing to delete – no elements on this tool's levels in the active model.", "warn")
+            return
+        msg = ("Delete %d element(s) from the active model and detach %d raster attachment(s)?\n\n"
+               "Levels:\n  %s\n\nAnything else you drew on these levels is deleted too. "
+               "Use MicroStation Undo to reverse." % (len(refs) - n_rast, n_rast, "\n  ".join(names)))
+        if QtWidgets.QMessageBox.question(self, APP_TITLE, msg,
+                                          QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                                          QtWidgets.QMessageBox.No) != QtWidgets.QMessageBox.Yes:
+            return
+        with self.busy("Deleting placed drawing…"):
+            n = placer.delete_refs(refs)
+        self.log("Deleted %d element(s); %d raster attachment(s) detached." % (n - n_rast, n_rast)
+                 if n == len(refs) else "Deleted %d of %d element(s); some could not be deleted." % (n, len(refs)),
+                 "ok" if n == len(refs) else "warn")
+        self.card_out.set_done("deleted", ok=False)
 
     def closeEvent(self, ev):
         try:

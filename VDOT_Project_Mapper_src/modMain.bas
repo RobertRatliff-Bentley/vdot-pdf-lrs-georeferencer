@@ -17,8 +17,9 @@ Public Const APP_TITLE As String = "VDOT Project Mapper"
 Public Const APP_VERSION As String = "1.0"
 Public Const REG_APP As String = "VDOT_Georef_Native"
 Public Const PREVIEW_DPI As Long = 48
-Public Const MASK_IMAGE_DPI As Double = 200
-Public Const MASK_IMAGE_MAX_PX As Double = 10000
+Public Const MASK_IMAGE_DPI As Double = 200        ' default map image resolution
+Public Const TILE_PX As Long = 4000                 ' max tile size (px) for the map image
+Public Const IMAGE_MAX_TOTAL_PX As Double = 600000000#  ' cap on the rendered page size
 Public Const KEY_COLOR As Long = &H1FF01          ' colour-key used for transparent pixels (R=1, G=255, B=1)
 
 '---------------------------------------------------------------- route groups
@@ -729,10 +730,24 @@ Public Sub DoPlace()
             End If
         End If
         SetProgress 3
-        img = MakeMaskedImage(mask, nM, Chk("chkWhite"), iw, ih)
-        AttachImage img, lv(2), CLng(GetVal("scrTransp")), True
-        LogMsg "Map image attached: " & FileTitle(img) & " (" & iw & " " & UTimes() & " " & ih & " px)" & _
-            IIf(nM > 0, ", everything outside the " & IIf(hasF, "fence", "boundary") & " is transparent", ""), "ok"
+        Dim dpiReq As Double, dpiUsed As Double, nT As Long, ti As Long, nImg As Long, mp As Double, t0 As Single
+        dpiReq = ResDpi(): dpiUsed = dpiReq: t0 = Timer
+        On Error GoTo EHT
+        nT = BeginMaskedTiles(mask, nM, Chk("chkWhite"), dpiUsed)
+        For ti = 0 To nT - 1
+            SetStatus "Building map tile " & (ti + 1) & " of " & nT & UEll()
+            img = MakeMaskedTile(ti, nImg + 1, iw, ih)
+            If Len(img) > 0 Then
+                AttachImage img, lv(2), CLng(GetVal("scrTransp")), True
+                nImg = nImg + 1: mp = mp + CDbl(iw) * ih / 1000000#
+            End If
+        Next
+        EndMaskedTiles
+        On Error GoTo EH
+        If dpiUsed < dpiReq - 0.5 Then LogMsg "Map is very large: resolution reduced to " & CLng(dpiUsed) & " DPI.", "warn"
+        LogMsg "Map image attached at " & CLng(dpiUsed) & " DPI: " & nImg & " tile(s), " & Format$(mp, "0") & _
+            " megapixels (" & Format$(Timer - t0, "0") & " s)" & _
+            IIf(nM > 0, "; everything outside the " & IIf(hasF, "fence", "boundary") & " is transparent", ""), "ok"
         If Chk("chkPdfOff") Then
             AttachPdfHidden lv(2)
             LogMsg "Original PDF attached, turned off in all views " & UDash() & " turn it on per view in Raster Manager.", "ok"
@@ -771,10 +786,24 @@ Public Sub DoPlace()
     LogMsg "Done " & UDash() & " elements placed in " & ActiveModelReference.Name & ".", "ok"
     BusyOff
     Exit Sub
+EHT:
+    img = Err.Description
+    EndMaskedTiles
+    BusyOff
+    LogMsg img, "err"
+    Exit Sub
 EH:
     BusyOff
     LogMsg Err.Description, "err"
 End Sub
+
+Public Function ResDpi() As Double
+    Dim v As Double
+    On Error Resume Next
+    v = Val(GetVal("cboRes"))
+    If v < 72 Or v > 1200 Then v = MASK_IMAGE_DPI
+    ResDpi = v
+End Function
 
 Public Sub OpenVdotMaps()
     On Error Resume Next

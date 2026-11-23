@@ -31,7 +31,7 @@ RUN
 NATIVE VBA VERSION (no Python required)
   VDOT_Project_Mapper.mvba is a stand-alone VBA rewrite of the tool with the same window,
   cards, PDF viewer tools (pan, adjust, tie points, block fence), auto-align, routes,
-  masked PNG + hidden PDF placement, scale bar and north arrow. It does not need Python
+  high-resolution masked PNG tiles + hidden PDF placement, scale bar and north arrow. It does not need Python
   or the bundled libraries - it only needs MicroStation/OpenRoads and internet access.
      vba run [VDOT_Project_Mapper]modMain.Main
   Differences: the viewer zooms with the toolbar buttons (no mouse wheel); page 1 of the PDF

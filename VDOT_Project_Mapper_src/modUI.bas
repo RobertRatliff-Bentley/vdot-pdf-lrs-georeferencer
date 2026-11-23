@@ -406,10 +406,10 @@ Public Sub BuildUI(ByVal frm As Object)
     T = T + 152 + 12
 
     ' 5 Output
-    Set f = CardFrame(5, "Place in MicroStation", T, 334)
+    Set f = CardFrame(5, "Place in MicroStation", T, 357)
     lv = Array("chkPlaceBnd", "Boundary shapes", True, "", _
                "chkPlaceRoutes", "LRS routes", True, "", _
-               "chkPlaceRaster", "Map image", True, "Render the PDF page to a PNG (saved next to the PDF) and attach it georeferenced", _
+               "chkPlaceRaster", "Map image", True, "Render the PDF page at the chosen resolution to high-resolution PNG tiles (saved next to the PDF) and attach them georeferenced", _
                "chkClip", "Mask outside county", True, "Make everything outside the county boundary transparent in the image", _
                "chkWhite", "Transparent white", False, "Make white paper transparent so imagery/linework shows through", _
                "chkHoles", "Mask holes", False, "Exclude interior holes of the boundary (e.g. independent cities)", _
@@ -425,19 +425,25 @@ Public Sub BuildUI(ByVal frm As Object)
     o.Orientation = 1: o.Min = 0: o.Max = 90: o.SmallChange = 1: o.LargeChange = 10: o.Value = 0
     Set o = Add(f, "Forms.Label.1", "lblTransp", "text", PAD + IW - 36, 112, 36, 14, "0 %")
     o.TextAlign = 3
+    Add f, "Forms.Label.1", "lblResCap", "text", PAD, 136, 104, 14, "Image resolution"
+    Set o = Add(f, "Forms.ComboBox.1", "cboRes", "input", PAD + 108, 133, IW - 108, 20)
+    o.Style = 2
+    o.AddItem "150 DPI (fast)": o.AddItem "200 DPI": o.AddItem "300 DPI (sharp)": o.AddItem "400 DPI (very sharp)"
+    o.ListIndex = 1
+    o.ControlTipText = "Resolution of the clipped map image. Higher is sharper when zoomed in but takes longer to render (300 DPI on a district map can take several minutes)."
     lvl = Array("Boundary level", "VDOT_LRS_Boundary", "Routes level", "VDOT_LRS_Routes", _
                 "Raster level", "VDOT_PDF_Map", "Annotation level", "VDOT_Map_Annotation")
     For i = 0 To 3
-        Add f, "Forms.Label.1", "lblLv" & i, "text", PAD, 136 + i * 23, 104, 14, CStr(lvl(i * 2))
-        Add(f, "Forms.TextBox.1", "txtLv" & i, "input", PAD + 108, 133 + i * 23, IW - 108, 19).text = CStr(lvl(i * 2 + 1))
+        Add f, "Forms.Label.1", "lblLv" & i, "text", PAD, 159 + i * 23, 104, 14, CStr(lvl(i * 2))
+        Add(f, "Forms.TextBox.1", "txtLv" & i, "input", PAD + 108, 156 + i * 23, IW - 108, 19).text = CStr(lvl(i * 2 + 1))
         If i = 1 Then SetTip "lblLv1", "Prefix for the per-class route levels": SetTip "txtLv1", "Routes go on one level per LRS class: <prefix>_Interstate, _US_Primary, _State_Primary, _Secondary, _Ramps_Frontage, _Urban_Streets, _Other."
     Next
-    AddBtn f, "btnPlace", "Place in MicroStation  " & ChrW(&H279C), "primary", PAD, 230, IW, 30
-    AddBtn f, "btnDelete", ChrW(&H2715) & "  Delete placed drawing & rasters", "danger", PAD, 266, IW, 26, _
+    AddBtn f, "btnPlace", "Place in MicroStation  " & ChrW(&H279C), "primary", PAD, 253, IW, 30
+    AddBtn f, "btnDelete", ChrW(&H2715) & "  Delete placed drawing & rasters", "danger", PAD, 289, IW, 26, _
         "Delete everything on this tool's boundary, route, raster and annotation levels in the active model and detach its raster attachments (asks first)."
-    Set o = Add(f, "Forms.Label.1", "lblOut", "hint", PAD, 300, IW, 30, "")
+    Set o = Add(f, "Forms.Label.1", "lblOut", "hint", PAD, 323, IW, 30, "")
     o.WordWrap = True
-    T = T + 334 + 12
+    T = T + 357 + 12
     C("fraSide").ScrollHeight = T
     RecordAnchors
 
@@ -597,7 +603,7 @@ Private Sub RecordAnchors()
         "lblRoutes:S btnRoutes:R " & _
         "chkUseRoutes:R btnAuto:P btnRefine:P btnReset:P btnPan:P btnAdjust:P btnTie:P lblFit:S btnClearPins:R " & _
         "chkPlaceBnd:P chkPlaceRoutes:P chkPlaceRaster:P chkClip:P chkWhite:P chkHoles:P chkPdfOff:P chkScaleNorth:P " & _
-        "scrTransp:S lblTransp:R txtLv0:S txtLv1:S txtLv2:S txtLv3:S btnPlace:S btnDelete:S lblOut:S", " ")
+        "scrTransp:S lblTransp:R cboRes:S txtLv0:S txtLv1:S txtLv2:S txtLv3:S btnPlace:S btnDelete:S lblOut:S", " ")
     For i = 0 To UBound(spec)
         p = InStr(spec(i), ":"): nm = Left$(spec(i), p - 1)
         isB = IsBtn(nm)

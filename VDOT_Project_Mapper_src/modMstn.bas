@@ -6,6 +6,12 @@ Option Explicit
 Private mTmp As Raster          ' temporary (invisible) PDF attachment used for rendering
 Private mImgT() As Double       ' last masked image: pixel -> world
 Private mImgW As Long, mImgH As Long
+' high-resolution tile state (BeginMaskedTiles / MakeMaskedTile / EndMaskedTiles)
+Private mBig As String, mBigF As Integer, mBigOff As Long, mBigStride As Long, mBigBpp As Long
+Private mBigW As Long, mBigH As Long, mBigTop As Boolean
+Private mKx As Double, mKy As Double, mRx() As TPoly, mNM As Long, mWhite As Boolean
+Private mCx0 As Long, mCy0 As Long, mCw As Long, mCh As Long, mNTX As Long, mNTY As Long
+Private mOutBase As String
 
 '---------------------------------------------------------------- little-endian helpers
 Private Function GetL(b() As Byte, ByVal o As Long) As Long
@@ -214,31 +220,57 @@ Private Sub WorldToImage(ByVal wx As Double, ByVal wy As Double, ByVal kx As Dou
     ix = px * kx: iy = py * ky
 End Sub
 
-'Builds <pdf>_county.png / _map.png with everything outside the mask (even-odd rings, world coords) set to KEY_COLOR.
-'Returns the file path; sets mImgT (image px -> world), image size.
-Public Function MakeMaskedImage(mask() As TPoly, ByVal nM As Long, ByVal whiteOut As Boolean, iw As Long, ih As Long) As String
-    Dim px() As Byte, W As Long, H As Long, wpt As Double, hpt As Double, dpi As Double, longIn As Double
-    Dim kx As Double, ky As Double, k As Long, i As Long, ix As Double, iy As Double
-    Dim bx0 As Double, by0 As Double, bx1 As Double, by1 As Double
-    Dim cx0 As Long, cy0 As Long, cw As Long, ch As Long
-    longIn = IIf(gPdfWpt > gPdfHpt, gPdfWpt, gPdfHpt) / 72#
-    dpi = MASK_IMAGE_DPI
-    If longIn * dpi > MASK_IMAGE_MAX_PX Then dpi = MASK_IMAGE_MAX_PX / longIn
-    SetStatus "Rendering the PDF at " & CLng(dpi) & " dpi" & UEll()
-    RenderPdfPage gPdfPath, dpi, px, W, H, wpt, hpt, 40000000#
-    kx = W / (gPdfWpt * PREVIEW_DPI / 72#)
-    ky = H / (gPdfHpt * PREVIEW_DPI / 72#)
+'---------------------------------------------------------------- high-resolution masked tiles
+'The page is rendered once at the chosen DPI to a temporary BMP; each tile (<= TILE_PX square) of the mask's
+'bounding box is then streamed from that file, masked (KEY_COLOR outside the even-odd rings) and saved as
+'<pdf>_county_tNN.png. Tiles that lie completely outside the mask are skipped.
 
-    ' world rings -> image px
-    Dim rx() As TPoly
+'Renders the page and prepares the tile grid. Returns the number of tile slots; dpi returns the DPI used.
+Public Function BeginMaskedTiles(mask() As TPoly, ByVal nM As Long, ByVal whiteOut As Boolean, dpi As Double) As Long
+    Dim wpt As Double, hpt As Double, ex As Double, ey As Double, bs As Point2d, so As Point2d, se As Point2d
+    Dim bm As RasterBitmap, tries As Long, msg As String, hdr(0 To 53) As Byte, k As Long, i As Long
+    Dim ix As Double, iy As Double, bx0 As Double, by0 As Double, bx1 As Double, by1 As Double
+    EndMaskedTiles
+    If (gPdfWpt / 72# * dpi) * (gPdfHpt / 72# * dpi) > IMAGE_MAX_TOTAL_PX Then
+        dpi = Sqr(IMAGE_MAX_TOTAL_PX / ((gPdfWpt / 72#) * (gPdfHpt / 72#)))
+    End If
+    mBig = gTmpDir & "\render_hires.bmp"
+    If Dir$(mBig) <> "" Then Kill mBig
+    PdfOpen gPdfPath, wpt, hpt, ex, ey
+    On Error GoTo EH
+Retry:
+    SetStatus "Rendering the PDF at " & CLng(dpi) & " DPI (large maps can take a few minutes)" & UEll()
+    DoEvents
+    bs.X = CLng(gPdfWpt / 72# * dpi): bs.Y = CLng(gPdfHpt / 72# * dpi)
+    se = mTmp.RasterInformation.Extent
+    Set bm = mTmp.GetBitmap(bs, so, se)
+    If bm Is Nothing Then Err.Raise vbObjectError + 713, , "MicroStation could not render the PDF page."
+    bm.ExportRaster mBig, 9, 1, 0, 4
+    Set bm = Nothing
+    On Error GoTo 0
+    PdfClose
+
+    mBigF = FreeFile
+    Open mBig For Binary Access Read As #mBigF
+    Get #mBigF, 1, hdr
+    mBigOff = GetL(hdr, 10): mBigW = GetL(hdr, 18): mBigH = GetL(hdr, 22): mBigBpp = GetI(hdr, 28)
+    mBigTop = mBigH < 0: If mBigTop Then mBigH = -mBigH
+    If mBigBpp <> 24 And mBigBpp <> 32 Then
+        EndMaskedTiles
+        Err.Raise vbObjectError + 702, , "Unsupported render depth " & mBigBpp
+    End If
+    mBigStride = ((mBigW * mBigBpp + 31) \ 32) * 4
+    mKx = mBigW / (gPdfWpt * PREVIEW_DPI / 72#)
+    mKy = mBigH / (gPdfHpt * PREVIEW_DPI / 72#)
+    mNM = nM: mWhite = whiteOut
     If nM > 0 Then
-        ReDim rx(0 To nM - 1)
+        ReDim mRx(0 To nM - 1)
         bx0 = 1E+300: by0 = 1E+300: bx1 = -1E+300: by1 = -1E+300
         For k = 0 To nM - 1
-            PolyInit rx(k), mask(k).N
+            PolyInit mRx(k), mask(k).N
             For i = 0 To mask(k).N - 1
-                WorldToImage mask(k).X(i), mask(k).Y(i), kx, ky, ix, iy
-                PolyAdd rx(k), ix, iy
+                WorldToImage mask(k).X(i), mask(k).Y(i), mKx, mKy, ix, iy
+                PolyAdd mRx(k), ix, iy
                 If ix < bx0 Then bx0 = ix
                 If ix > bx1 Then bx1 = ix
                 If iy < by0 Then by0 = iy
@@ -247,45 +279,90 @@ Public Function MakeMaskedImage(mask() As TPoly, ByVal nM As Long, ByVal whiteOu
         Next
         If bx0 < 0 Then bx0 = 0
         If by0 < 0 Then by0 = 0
-        If bx1 > W Then bx1 = W
-        If by1 > H Then by1 = H
-        cx0 = Int(bx0): cy0 = Int(by0)
-        cw = -Int(-bx1) - cx0: ch = -Int(-by1) - cy0
-        If cw <= 0 Or ch <= 0 Then
+        If bx1 > mBigW Then bx1 = mBigW
+        If by1 > mBigH Then by1 = mBigH
+        mCx0 = Int(bx0): mCy0 = Int(by0)
+        mCw = -Int(-bx1) - mCx0: mCh = -Int(-by1) - mCy0
+        If mCw <= 0 Or mCh <= 0 Then
+            EndMaskedTiles
             Err.Raise vbObjectError + 720, , "The county boundary does not overlap the PDF page; check the alignment."
         End If
     Else
-        cx0 = 0: cy0 = 0: cw = W: ch = H
+        mCx0 = 0: mCy0 = 0: mCw = mBigW: mCh = mBigH
     End If
+    mNTX = -Int(-mCw / TILE_PX): mNTY = -Int(-mCh / TILE_PX)
 
-    ' crossing table per row (CSR)
-    Dim cnt() As Long, start() As Long, xs() As Double, fillp() As Long, j As Long, jA As Long, jB As Long
-    Dim xa As Double, ya As Double, xb As Double, yb As Double, nX As Long
-    If nM > 0 Then
+    ' output location: next to the PDF, else LOCALAPPDATA; remove stale tiles from earlier placements
+    Dim baseName As String, cands(0 To 1) As String, c As Variant, old As String, dirp As String
+    baseName = FileTitle(gPdfPath)
+    baseName = Left$(baseName, InStrRev(baseName, ".") - 1) & IIf(nM > 0, "_county", "_map")
+    cands(0) = Left$(gPdfPath, InStrRev(gPdfPath, "\")) & baseName
+    cands(1) = Environ$("LOCALAPPDATA") & "\VDOT_Georef\" & baseName
+    mOutBase = ""
+    For Each c In cands
+        If CanWrite(CStr(c) & ".png") Then mOutBase = CStr(c): Exit For
+    Next
+    If Len(mOutBase) = 0 Then EndMaskedTiles: Err.Raise vbObjectError + 721, , "Could not write the map image."
+    dirp = Left$(mOutBase, InStrRev(mOutBase, "\"))
+    On Error Resume Next
+    old = Dir$(mOutBase & "_t??.*")
+    Do While Len(old) > 0
+        DetachExisting dirp & old
+        Kill dirp & old
+        old = Dir$()
+    Loop
+    Err.Clear
+    On Error GoTo 0
+    BeginMaskedTiles = mNTX * mNTY
+    Exit Function
+EH:
+    tries = tries + 1
+    msg = Err.Description
+    Set bm = Nothing
+    If tries <= 3 And Not mTmp Is Nothing Then
+        dpi = dpi * 0.7
+        Resume Retry
+    End If
+    PdfClose
+    Err.Raise vbObjectError + 714, , "Rendering the PDF failed: " & msg
+End Function
+
+'Builds tile t (0-based). Returns "" when the tile is entirely outside the mask; otherwise the file path,
+'with mImgT / mImgW / mImgH set for AttachImage.
+Public Function MakeMaskedTile(ByVal t As Long, ByVal seq As Long, iw As Long, ih As Long) As String
+    Dim tx0 As Long, ty0 As Long, cw As Long, ch As Long, k As Long, i As Long, j As Long, jA As Long, jB As Long
+    Dim cnt() As Long, start() As Long, xs() As Double, fillp() As Long, nX As Long
+    Dim xa As Double, ya As Double, xb As Double, yb As Double
+    tx0 = mCx0 + (t Mod mNTX) * TILE_PX: ty0 = mCy0 + (t \ mNTX) * TILE_PX
+    cw = mCx0 + mCw - tx0: If cw > TILE_PX Then cw = TILE_PX
+    ch = mCy0 + mCh - ty0: If ch > TILE_PX Then ch = TILE_PX
+
+    If mNM > 0 Then
         ReDim cnt(0 To ch): ReDim start(0 To ch)
-        For k = 0 To nM - 1
-            For i = 0 To rx(k).N - 1
-                xa = rx(k).X(i): ya = rx(k).Y(i)
-                If i < rx(k).N - 1 Then xb = rx(k).X(i + 1): yb = rx(k).Y(i + 1) Else xb = rx(k).X(0): yb = rx(k).Y(0)
+        For k = 0 To mNM - 1
+            For i = 0 To mRx(k).N - 1
+                ya = mRx(k).Y(i)
+                If i < mRx(k).N - 1 Then yb = mRx(k).Y(i + 1) Else yb = mRx(k).Y(0)
                 If ya <> yb Then
-                    RowRange ya, yb, cy0, ch, jA, jB
+                    RowRange ya, yb, ty0, ch, jA, jB
                     For j = jA To jB: cnt(j) = cnt(j) + 1: Next
                 End If
             Next
         Next
         For j = 0 To ch - 1: start(j + 1) = start(j) + cnt(j): Next
         nX = start(ch)
-        If nX > 0 Then ReDim xs(0 To nX - 1)
+        If nX = 0 Then Exit Function
+        ReDim xs(0 To nX - 1)
         ReDim fillp(0 To ch)
         For j = 0 To ch: fillp(j) = start(j): Next
-        For k = 0 To nM - 1
-            For i = 0 To rx(k).N - 1
-                xa = rx(k).X(i): ya = rx(k).Y(i)
-                If i < rx(k).N - 1 Then xb = rx(k).X(i + 1): yb = rx(k).Y(i + 1) Else xb = rx(k).X(0): yb = rx(k).Y(0)
+        For k = 0 To mNM - 1
+            For i = 0 To mRx(k).N - 1
+                xa = mRx(k).X(i): ya = mRx(k).Y(i)
+                If i < mRx(k).N - 1 Then xb = mRx(k).X(i + 1): yb = mRx(k).Y(i + 1) Else xb = mRx(k).X(0): yb = mRx(k).Y(0)
                 If ya <> yb Then
-                    RowRange ya, yb, cy0, ch, jA, jB
+                    RowRange ya, yb, ty0, ch, jA, jB
                     For j = jA To jB
-                        xs(fillp(j)) = xa + (cy0 + j + 0.5 - ya) * (xb - xa) / (yb - ya) - cx0
+                        xs(fillp(j)) = xa + (ty0 + j + 0.5 - ya) * (xb - xa) / (yb - ya) - tx0
                         fillp(j) = fillp(j) + 1
                     Next
                 End If
@@ -293,27 +370,32 @@ Public Function MakeMaskedImage(mask() As TPoly, ByVal nM As Long, ByVal whiteOu
         Next
     End If
 
-    ' write the masked crop row by row (BMP is bottom-up)
-    Dim hdr() As Byte, stride As Long, f As Integer, row() As Byte, keyRow() As Byte, base As Long
+    Dim hdr() As Byte, stride As Long, f As Integer, row() As Byte, keyRow() As Byte, src() As Byte
     Dim a As Long, b As Long, s As Long, e As Long, p As Long, q As Long, tmpBmp As String, tv As Double
-    Dim keyB As Byte, keyG As Byte, keyR As Byte
+    Dim keyB As Byte, keyG As Byte, keyR As Byte, anyIn As Boolean, srcY As Long, nb As Long, x As Long
     keyR = KEY_COLOR And &HFF: keyG = (KEY_COLOR \ &H100) And &HFF: keyB = (KEY_COLOR \ &H10000) And &HFF
+    nb = mBigBpp \ 8
     BmpHeader hdr, cw, ch, stride
-    ReDim row(0 To stride - 1): ReDim keyRow(0 To stride - 1)
+    ReDim row(0 To stride - 1): ReDim keyRow(0 To stride - 1): ReDim src(0 To cw * nb - 1)
     For i = 0 To cw - 1
         keyRow(i * 3) = keyB: keyRow(i * 3 + 1) = keyG: keyRow(i * 3 + 2) = keyR
     Next
-    tmpBmp = gTmpDir & "\masked.bmp"
+    tmpBmp = gTmpDir & "\masked_tile.bmp"
     If Dir$(tmpBmp) <> "" Then Kill tmpBmp
     f = FreeFile
     Open tmpBmp For Binary Access Write As #f
     Put #f, 1, hdr
     For j = 0 To ch - 1
-        base = ((cy0 + j) * W + cx0) * 3
-        If nM > 0 Then
+        If mBigTop Then srcY = ty0 + j Else srcY = mBigH - 1 - (ty0 + j)
+        Get #mBigF, mBigOff + 1 + CLng(srcY) * mBigStride + CLng(tx0) * nb, src
+        If nb = 4 Then
+            For x = 0 To cw - 1
+                src(x * 3) = src(x * 4): src(x * 3 + 1) = src(x * 4 + 1): src(x * 3 + 2) = src(x * 4 + 2)
+            Next
+        End If
+        If mNM > 0 Then
             CopyMemory row(0), keyRow(0), stride
             a = start(j): b = start(j + 1) - 1
-            ' insertion sort of this row's crossings
             For p = a + 1 To b
                 tv = xs(p): q = p - 1
                 Do While q >= a
@@ -326,12 +408,13 @@ Public Function MakeMaskedImage(mask() As TPoly, ByVal nM As Long, ByVal whiteOu
                 s = -Int(-(xs(p) - 0.5)): e = -Int(-(xs(p + 1) - 0.5)) - 1
                 If s < 0 Then s = 0
                 If e > cw - 1 Then e = cw - 1
-                If e >= s Then CopyMemory row(s * 3), px(base + s * 3), (e - s + 1) * 3
+                If e >= s Then CopyMemory row(s * 3), src(s * 3), (e - s + 1) * 3: anyIn = True
             Next
         Else
-            CopyMemory row(0), px(base), cw * 3
+            CopyMemory row(0), src(0), cw * 3
+            anyIn = True
         End If
-        If whiteOut Then
+        If mWhite Then
             For i = 0 To cw * 3 - 1 Step 3
                 If row(i) >= 235 Then
                     If row(i + 1) >= 235 Then
@@ -341,37 +424,36 @@ Public Function MakeMaskedImage(mask() As TPoly, ByVal nM As Long, ByVal whiteOu
             Next
         End If
         Put #f, 55 + CLng(ch - 1 - j) * stride, row
-        If j Mod 400 = 0 Then SetStatus "Masking image " & CLng(100# * j / ch) & "%" & UEll()
+        If j Mod 500 = 0 Then DoEvents
     Next
     Close #f
-    Erase px
+    If Not anyIn Then Kill tmpBmp: Exit Function
 
-    ImageToWorldT kx, ky, cx0, cy0, mImgT
+    ImageToWorldT mKx, mKy, tx0, ty0, mImgT
     mImgW = cw: mImgH = ch
     iw = cw: ih = ch
-
-    ' final file: PNG next to the PDF, else LOCALAPPDATA; BMP fallback when WIA is missing
-    Dim baseName As String, suffix As String, cands(0 To 1) As String, c As Variant, outp As String
-    baseName = FileTitle(gPdfPath)
-    baseName = Left$(baseName, InStrRev(baseName, ".") - 1)
-    suffix = IIf(nM > 0, "_county", "_map")
-    cands(0) = Left$(gPdfPath, InStrRev(gPdfPath, "\")) & baseName & suffix & ".png"
-    cands(1) = Environ$("LOCALAPPDATA") & "\VDOT_Georef\" & baseName & suffix & ".png"
-    For Each c In cands
-        If CanWrite(CStr(c)) Then
-            DetachExisting CStr(c)
-            If BmpToPng(tmpBmp, CStr(c)) Then outp = CStr(c): Exit For
-            outp = Left$(CStr(c), Len(CStr(c)) - 4) & ".bmp"
-            DetachExisting outp
-            If Dir$(outp) <> "" Then Kill outp
-            FileCopy tmpBmp, outp
-            Exit For
-        End If
-    Next
-    If Len(outp) = 0 Then Err.Raise vbObjectError + 721, , "Could not write the map image."
+    Dim outp As String
+    outp = mOutBase & "_t" & Format$(seq, "00") & ".png"
+    DetachExisting outp
+    If Not BmpToPng(tmpBmp, outp) Then
+        outp = Left$(outp, Len(outp) - 4) & ".bmp"
+        DetachExisting outp
+        If Dir$(outp) <> "" Then Kill outp
+        FileCopy tmpBmp, outp
+    End If
     Kill tmpBmp
-    MakeMaskedImage = outp
+    MakeMaskedTile = outp
 End Function
+
+Public Sub EndMaskedTiles()
+    On Error Resume Next
+    If mBigF <> 0 Then Close #mBigF
+    mBigF = 0
+    If Len(mBig) > 0 Then If Dir$(mBig) <> "" Then Kill mBig
+    mBig = ""
+    PdfClose
+    Err.Clear
+End Sub
 
 Private Sub RowRange(ByVal ya As Double, ByVal yb As Double, ByVal cy0 As Long, ByVal ch As Long, jA As Long, jB As Long)
     Dim lo As Double, hi As Double

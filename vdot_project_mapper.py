@@ -27,6 +27,7 @@ Run
 import sys
 import os
 import re
+import glob
 import json
 import math
 import time
@@ -205,8 +206,11 @@ PREVIEW_DPI = 48.0          # analysis / alignment grid (scene units)
 PREVIEW_DISPLAY_DPI = 96.0  # sharper on-screen preview for tie points
 WIN_ATTR = "_vdot_georef_win"
 # Resolution of the masked county image attached in MicroStation (longest side capped).
-MASK_IMAGE_DPI = 200.0
-MASK_IMAGE_MAX_PX = 10000
+MASK_IMAGE_DPI = 300
+MASK_IMAGE_MAX_PX = 10000      # single-image fallback when PyMuPDF is unavailable
+IMAGE_DPI_CHOICES = [150, 200, 300, 400]
+IMAGE_TILE_PX = 6000           # tile edge for high-resolution map images
+IMAGE_MAX_TOTAL_PX = 900e6     # cap on cropped pixels; DPI is lowered to fit
 # Initial bitmap-size guess for the PDF attachment; corrected from MicroStation after attaching.
 PDF_ATTACH_DPI_GUESS = 300.0
 BENTLEY_PYTHON = r"C:\ProgramData\Bentley\PowerPlatformPython\python\python.exe"
@@ -752,44 +756,143 @@ def make_masked_image(pdf_path, page, pdf_info, T_for, mask_rings, white_transpa
     rgba[..., :3] = rgb
     rgba[..., 3] = 255
     del rgb
-    if mask_rings:
-        Minv = np.linalg.inv(T_for(w, h))
-        path = QtGui.QPainterPath()
-        path.setFillRule(QtCore.Qt.OddEvenFill)
-        for r in mask_rings:
-            r = np.asarray(r, float)
-            px = (Minv @ np.vstack([r.T, np.ones(len(r))]))[:2].T
-            path.addPolygon(QtGui.QPolygonF([QtCore.QPointF(float(x), float(y)) for x, y in px]))
-            path.closeSubpath()
-        m = QtGui.QImage(w, h, QtGui.QImage.Format_Grayscale8)
-        m.fill(0)
-        p = QtGui.QPainter(m)
-        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        p.fillPath(path, QtGui.QColor(255, 255, 255))
-        p.end()
-        mp = m.constBits()
-        mp.setsize(m.byteCount())
-        alpha = np.frombuffer(mp, np.uint8).reshape(h, m.bytesPerLine())[:, :w].copy()
-        rgba[..., 3] = np.minimum(rgba[..., 3], alpha)
-        del m
-        if not alpha.any():
-            raise RuntimeError("The county boundary does not overlap the PDF page; check the alignment.")
+    if mask_rings and not _apply_ring_mask(rgba, np.linalg.inv(T_for(w, h)), mask_rings):
+        raise RuntimeError("The county boundary does not overlap the PDF page; check the alignment.")
     if white_transparent:
         make_paper_transparent(rgba)
     rgba[rgba[..., 3] == 0, :3] = 0
     out = QtGui.QImage(rgba.data, w, h, 4 * w, QtGui.QImage.Format_RGBA8888)
     base = os.path.splitext(os.path.basename(pdf_path))[0]
     suffix = "_county" if mask_rings else "_map"
-    cands = [os.path.join(os.path.dirname(pdf_path), base + suffix + ".png"),
-             os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "VDOT_Georef", base + suffix + ".png")]
-    for c in cands:
+    for d in _image_dirs(pdf_path):
+        c = os.path.join(d, base + suffix + ".png")
         try:
-            os.makedirs(os.path.dirname(c), exist_ok=True)
+            os.makedirs(d, exist_ok=True)
             if out.save(c, "PNG"):
                 return c, (w, h)
         except OSError:
             continue
-    raise RuntimeError("Could not save the masked image next to the PDF or in %s." % os.path.dirname(cands[-1]))
+    raise RuntimeError("Could not save the masked image next to the PDF or in %s." % _image_dirs(pdf_path)[-1])
+
+
+def _image_dirs(pdf_path):
+    return [os.path.dirname(pdf_path) or ".",
+            os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "VDOT_Georef")]
+
+
+def _apply_ring_mask(rgba, Minv, rings):
+    """Multiply alpha by an anti-aliased even-odd fill of world rings mapped through Minv (world -> px).
+    Returns False when nothing in the image is inside the rings."""
+    h, w = rgba.shape[:2]
+    path = QtGui.QPainterPath()
+    path.setFillRule(QtCore.Qt.OddEvenFill)
+    for r in rings:
+        r = np.asarray(r, float)
+        px = (Minv @ np.vstack([r.T, np.ones(len(r))]))[:2].T
+        path.addPolygon(QtGui.QPolygonF([QtCore.QPointF(float(x), float(y)) for x, y in px]))
+        path.closeSubpath()
+    m = QtGui.QImage(w, h, QtGui.QImage.Format_Grayscale8)
+    m.fill(0)
+    p = QtGui.QPainter(m)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    p.fillPath(path, QtGui.QColor(255, 255, 255))
+    p.end()
+    mp = m.constBits()
+    mp.setsize(m.byteCount())
+    alpha = np.frombuffer(mp, np.uint8).reshape(h, m.bytesPerLine())[:, :w]
+    np.minimum(rgba[..., 3], alpha, out=rgba[..., 3])
+    return bool(alpha.any())
+
+
+def make_masked_tiles(pdf_path, page, pdf_info, T_for, mask_rings, white_transparent, dpi):
+    """High-resolution version of make_masked_image: renders only the part of the page covered by
+    mask_rings at dpi, split into tiles of at most IMAGE_TILE_PX, each masked and saved as its own
+    PNG. Tiles fully outside the mask are skipped. Falls back to one capped image without PyMuPDF.
+    Returns (list of (path, (w, h), 3x3 tile px -> UOR), dpi used)."""
+    try:
+        fitz = _import_fitz()
+    except ImportError:
+        fitz = None
+    if fitz is None:
+        p, size = make_masked_image(pdf_path, page, pdf_info, T_for, mask_rings, white_transparent, None)
+        return [(p, size, T_for(*size))], size[0] * 72.0 / max(pdf_info["w_pt"], 1e-6)
+    wpt, hpt = float(pdf_info["w_pt"]), float(pdf_info["h_pt"])
+
+    def region(d):
+        Wf, Hf = wpt * d / 72.0, hpt * d / 72.0
+        if not mask_rings:
+            return Wf, Hf, 0, 0, int(np.ceil(Wf)), int(np.ceil(Hf))
+        Minv = np.linalg.inv(T_for(Wf, Hf))
+        pts = np.vstack([np.asarray(r, float) for r in mask_rings])
+        px = (Minv @ np.vstack([pts.T, np.ones(len(pts))]))[:2]
+        x0, y0 = max(0, int(np.floor(px[0].min())) - 2), max(0, int(np.floor(px[1].min())) - 2)
+        x1, y1 = min(int(np.ceil(Wf)), int(np.ceil(px[0].max())) + 2), min(int(np.ceil(Hf)), int(np.ceil(px[1].max())) + 2)
+        if x1 <= x0 or y1 <= y0:
+            raise RuntimeError("The county boundary does not overlap the PDF page; check the alignment.")
+        return Wf, Hf, x0, y0, x1, y1
+
+    Wf, Hf, x0, y0, x1, y1 = region(dpi)
+    area = float(x1 - x0) * (y1 - y0)
+    if area > IMAGE_MAX_TOTAL_PX:
+        dpi *= np.sqrt(IMAGE_MAX_TOTAL_PX / area) * 0.999
+        Wf, Hf, x0, y0, x1, y1 = region(dpi)
+    T_page = T_for(Wf, Hf)
+    base = os.path.splitext(os.path.basename(pdf_path))[0] + ("_county" if mask_rings else "_map")
+    out_dir = None
+    for d in _image_dirs(pdf_path):
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, "~vdot_write_test.tmp")
+            open(probe, "w").close()
+            os.remove(probe)
+            out_dir = d
+            break
+        except OSError:
+            continue
+    if out_dir is None:
+        raise RuntimeError("Could not write the map image next to the PDF or in %s." % _image_dirs(pdf_path)[-1])
+    for old in glob.glob(os.path.join(out_dir, glob.escape(base) + "_t[0-9][0-9].png")):
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    tiles = []
+    k = 72.0 / dpi
+    doc = fitz.open(pdf_path)
+    try:
+        pg = doc[max(0, min(int(page), doc.page_count - 1))]
+        mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        for ty in range(y0, y1, IMAGE_TILE_PX):
+            for tx in range(x0, x1, IMAGE_TILE_PX):
+                tx1, ty1 = min(x1, tx + IMAGE_TILE_PX), min(y1, ty + IMAGE_TILE_PX)
+                pix = pg.get_pixmap(matrix=mat, clip=fitz.Rect(tx * k, ty * k, tx1 * k, ty1 * k), alpha=False)
+                w, h, n = pix.width, pix.height, pix.n
+                if w < 1 or h < 1:
+                    continue
+                T = T_page @ np.array([[1.0, 0, pix.x], [0, 1.0, pix.y], [0, 0, 1.0]])
+                buf = np.frombuffer(pix.samples_mv if hasattr(pix, "samples_mv") else pix.samples, np.uint8)
+                src = buf.reshape(h, pix.stride)[:, :w * n].reshape(h, w, n)
+                rgba = np.empty((h, w, 4), np.uint8)
+                rgba[..., :3] = src[..., :1] if n < 3 else src[..., :3]
+                rgba[..., 3] = 255
+                del src, buf, pix
+                if mask_rings and not _apply_ring_mask(rgba, np.linalg.inv(T), mask_rings):
+                    continue
+                if white_transparent:
+                    make_paper_transparent(rgba)
+                rgba[rgba[..., 3] == 0, :3] = 0
+                path = os.path.join(out_dir, "%s_t%02d.png" % (base, len(tiles) + 1))
+                img = QtGui.QImage(rgba.data, w, h, 4 * w, QtGui.QImage.Format_RGBA8888)
+                if not img.save(path, "PNG"):
+                    raise RuntimeError("Could not save %s - if it is still attached, use 'Delete placed drawing' "
+                                       "first." % path)
+                del img, rgba
+                tiles.append((path, (w, h), T))
+    finally:
+        doc.close()
+    if not tiles:
+        raise RuntimeError("The county boundary does not overlap the PDF page; check the alignment.")
+    return tiles, dpi
 
 
 def qimage_to_gray(img):
@@ -2302,7 +2405,7 @@ class GeorefWindow(QtWidgets.QWidget):
         self.chk_scale_north = QtWidgets.QCheckBox("Scale bar && north arrow")
         self.chk_scale_north.setToolTip("Place a scale bar and a true-north arrow below the county's bottom-right corner")
         self.chk_pdf_off.setToolTip("Also attach the full original PDF page, georeferenced but turned off in all views")
-        self.chk_place_raster.setToolTip("Render the PDF page to a PNG (saved next to the PDF) and attach it georeferenced")
+        self.chk_place_raster.setToolTip("Render the PDF page at the chosen resolution to high-resolution PNG tiles (saved next to the PDF) and attach them georeferenced")
         self.chk_white.setToolTip("Make white paper transparent so imagery/linework shows through")
         self.chk_clip.setToolTip("Make everything outside the county boundary transparent in the image")
         self.chk_holes.setToolTip("Exclude interior holes of the boundary (e.g. independent cities)")
@@ -2331,6 +2434,13 @@ class GeorefWindow(QtWidgets.QWidget):
         trow.addWidget(self.sl_transp, 1)
         trow.addWidget(self.lb_transp)
         form.addRow("Raster transparency", trow)
+        self.cb_res = QtWidgets.QComboBox()
+        for d in IMAGE_DPI_CHOICES:
+            self.cb_res.addItem("%d DPI%s" % (d, {150: "  (fast)", 300: "  (sharp)", 400: "  (very sharp)"}.get(d, "")), d)
+        self.cb_res.setCurrentIndex(IMAGE_DPI_CHOICES.index(MASK_IMAGE_DPI))
+        self.cb_res.setToolTip("Resolution of the clipped map image. Large sheets are split into georeferenced "
+                               "tiles and cropped to the boundary, so higher DPI stays sharp when zoomed in.")
+        form.addRow("Image resolution", self.cb_res)
         self.ed_lv = {}
         for key, lbl in (("boundary", "Boundary level"), ("routes", "Routes level"), ("raster", "Raster level"),
                          ("annotation", "Annotation level")):
@@ -3086,15 +3196,21 @@ class GeorefWindow(QtWidgets.QWidget):
                             self.log("Mask holes: this boundary has no interior holes, so nothing was masked.", "warn")
                 self.progress.setValue(3)
                 self.pump()
-                img_path, size = self.run_bg(
-                    make_masked_image, self.pdf_path, int(self.pdf_info["page"]), self.pdf_info, T_for,
-                    mask_rings, self.chk_white.isChecked(), self.tmpdir)
+                tiles, used_dpi = self.run_bg(
+                    make_masked_tiles, self.pdf_path, int(self.pdf_info["page"]), self.pdf_info, T_for,
+                    mask_rings, self.chk_white.isChecked(), float(self.cb_res.currentData() or MASK_IMAGE_DPI))
                 lvl = placer.level_id(lv["raster"])
-                placer.attach_raster(img_path, T_for, size, lvl, self.sl_transp.value())
-                self.log("Map image attached: %s (%d ? %d px)%s" % (
-                    os.path.basename(img_path), size[0], size[1],
+                for i, (tpath, tsize, T_tile) in enumerate(tiles):
+                    placer.attach_raster(tpath, lambda w, h, T=T_tile: T, tsize, lvl, self.sl_transp.value())
+                    self.pump()
+                img_path = tiles[0][0]
+                self.log("Map image attached at %d DPI: %d tile(s), %.0f megapixels%s\n    %s" % (
+                    round(used_dpi), len(tiles), sum(s[0] * s[1] for _, s, _ in tiles) / 1e6,
                     ", everything outside the %s is transparent" % ("fence" if fence_w else "boundary")
-                    if mask_rings else ""), "ok")
+                    if mask_rings else "", os.path.dirname(img_path)), "ok")
+                if used_dpi < float(self.cb_res.currentData() or MASK_IMAGE_DPI) - 1:
+                    self.log("Resolution was reduced to %d DPI to keep the image size manageable." % round(used_dpi),
+                             "warn")
                 if self.chk_pdf_off.isChecked():
                     k = PDF_ATTACH_DPI_GUESS / 72.0
                     guess = (max(1, int(round(self.pdf_info["w_pt"] * k))),

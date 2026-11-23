@@ -189,7 +189,8 @@ DEFAULT_LEVELS = {
     "annotation": "VDOT_Map_Annotation",
 }
 
-PREVIEW_DPI = 48.0
+PREVIEW_DPI = 48.0          # analysis / alignment grid (scene units)
+PREVIEW_DISPLAY_DPI = 96.0  # sharper on-screen preview for tie points
 WIN_ATTR = "_vdot_georef_win"
 # Resolution of the masked county image attached in MicroStation (longest side capped).
 MASK_IMAGE_DPI = 200.0
@@ -480,6 +481,47 @@ def guess_jurisdiction(pdf_path, juris_list):
     return None
 
 
+def guess_jurisdiction_from_text(pdf_path, page, juris_list):
+    """Fallback when the file name is generic: find '<Name> County' / 'City of <Name>' etc. in the
+    PDF text layer. Labels of neighbouring jurisdictions are usually small, so the match in the
+    largest type (the title block) wins. Needs PyMuPDF; returns None otherwise."""
+    try:
+        fitz = _import_fitz()
+    except ImportError:
+        return None
+    lines = []
+    try:
+        with fitz.open(pdf_path) as doc:
+            pg = doc[max(0, min(int(page), doc.page_count - 1))]
+            for b in pg.get_text("dict").get("blocks", []):
+                for ln in b.get("lines", []):
+                    t = re.sub(r"\s+", " ", " ".join(s.get("text", "") for s in ln.get("spans", []))).strip().upper()
+                    if t:
+                        lines.append((t, t.replace(" ", ""), max(s.get("size", 0) for s in ln["spans"])))
+    except Exception:
+        return None
+    if not lines:
+        return None
+    best = None
+    for j in juris_list:
+        nm = (j.get("NAME") or "").strip().upper()
+        full = (j.get("NAMELSAD") or "").strip().upper()
+        if not nm:
+            continue
+        kind = full[len(nm):].strip() if full.startswith(nm) else ""
+        pats = [full] if full else []
+        if kind:
+            pats.append("%s OF %s" % (kind, nm))
+        for t, sq, size in lines:
+            for p in pats:
+                hit = re.search(r"(?<![A-Z])%s(?![A-Z])" % re.escape(p), t) or (len(p) > 8 and p.replace(" ", "") in sq)
+                if hit:
+                    score = (size, len(p))
+                    if best is None or score > best[0]:
+                        best = (score, j)
+    return best[1] if best else None
+
+
 # =============================================================================
 # PDF rendering (subprocess with PySide6.QtPdf, fallback PyMuPDF in-process)
 # =============================================================================
@@ -524,57 +566,142 @@ def _find_python_exe():
     return None
 
 
-def render_pdf_page(pdf_path, out_png, dpi, page=0, wait=None):
-    """Render one PDF page to PNG at dpi. Returns dict(pages, w_pt, h_pt, width, height)."""
+def _import_fitz():
+    try:
+        import pymupdf as fitz  # PyMuPDF renders in-process (no subprocess needed)
+    except ImportError:
+        import fitz
+    return fitz
+
+
+def qimage_to_rgb(img):
+    img = img.convertToFormat(QtGui.QImage.Format_RGB888)
+    w, h, bpl = img.width(), img.height(), img.bytesPerLine()
+    ptr = img.constBits()
+    ptr.setsize(h * bpl)
+    return np.frombuffer(ptr, np.uint8).reshape(h, bpl)[:, :3 * w].reshape(h, w, 3).copy()
+
+
+def rgb_to_qimage(rgb):
+    rgb = np.ascontiguousarray(rgb, np.uint8)
+    h, w = rgb.shape[:2]
+    return QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
+
+
+def rgb_to_gray(rgb):
+    """Same weights as Qt's Grayscale8 conversion (qGray)."""
+    r, g, b = (rgb[..., i].astype(np.uint32) for i in range(3))
+    return ((r * 11 + g * 16 + b * 5) >> 5).astype(np.uint8)
+
+
+def render_pdf_rgb(pdf_path, dpi, page=0, wait=None):
+    """Render one PDF page at dpi straight into memory.
+    Returns (info dict(pages, page, w_pt, h_pt, width, height), HxWx3 uint8 RGB array)."""
     _repair_stdlib()
     try:
-        try:
-            import pymupdf as fitz  # PyMuPDF renders in-process (no subprocess needed)
-        except ImportError:
-            import fitz
+        fitz = _import_fitz()
+    except ImportError:
+        fitz = None
+    if fitz is not None:
         doc = fitz.open(pdf_path)
         try:
-            page = max(0, min(page, doc.page_count - 1))
+            page = max(0, min(int(page), doc.page_count - 1))
             pg = doc[page]
             pix = pg.get_pixmap(matrix=fitz.Matrix(dpi / 72.0, dpi / 72.0), alpha=False)
-            pix.save(out_png)
-            return {"pages": doc.page_count, "page": page, "w_pt": pg.rect.width, "h_pt": pg.rect.height,
-                    "width": pix.width, "height": pix.height}
+            w, h, n = pix.width, pix.height, pix.n
+            buf = np.frombuffer(pix.samples_mv if hasattr(pix, "samples_mv") else pix.samples, np.uint8)
+            rgb = buf.reshape(h, pix.stride)[:, :w * n].reshape(h, w, n)
+            rgb = np.repeat(rgb[..., :1], 3, axis=2) if n < 3 else rgb[..., :3].copy()
+            del buf, pix
+            return ({"pages": doc.page_count, "page": page, "w_pt": pg.rect.width, "h_pt": pg.rect.height,
+                     "width": w, "height": h}, rgb)
         finally:
             doc.close()
-    except ImportError:
-        pass
     exe = _find_python_exe()
     if not exe:
         raise RuntimeError("Python executable for PDF rendering not found.")
-    helper = os.path.join(tempfile.gettempdir(), "vdot_georef_render_helper.py")
-    with open(helper, "w", encoding="utf-8") as f:
-        f.write(_RENDER_HELPER)
+    fd, out_png = tempfile.mkstemp(prefix="georef_page_", suffix=".png")
+    os.close(fd)
     flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
     env = dict(os.environ)
     for k in ("QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH", "PYTHONHOME", "PYTHONPATH"):
         env.pop(k, None)
-    proc = subprocess.Popen([exe, helper, pdf_path, out_png, "%g" % dpi, str(int(page))],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags, env=env)
-    while proc.poll() is None:
-        if wait:
-            wait()
-        else:
-            time.sleep(0.05)
-    out, err = proc.communicate()
-    txt = out.decode("utf-8", "replace").strip().splitlines()
-    info = None
-    for line in reversed(txt):
+    try:
+        proc = subprocess.Popen([exe, "-c", _RENDER_HELPER, pdf_path, out_png, "%g" % dpi, str(int(page))],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags, env=env)
+        deadline = time.time() + 300
+        while True:
+            # communicate() keeps draining both pipes, so chatty Qt output cannot fill them and hang
+            try:
+                out, err = proc.communicate(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                if time.time() > deadline:
+                    proc.kill()
+                    proc.communicate()
+                    raise RuntimeError("PDF render timed out after 5 minutes.")
+                if wait:
+                    wait()
+        info = None
+        for line in reversed(out.decode("utf-8", "replace").strip().splitlines()):
+            try:
+                info = json.loads(line)
+                break
+            except Exception:
+                continue
+        if info is None:
+            raise RuntimeError("PDF render failed: %s" % err.decode("utf-8", "replace")[-800:])
+        if "error" in info:
+            raise RuntimeError("PDF render failed: %s" % info["error"])
+        img = QtGui.QImage(out_png)
+        if img.isNull():
+            raise RuntimeError("Rendered page image could not be loaded.")
+        return info, qimage_to_rgb(img)
+    finally:
         try:
-            info = json.loads(line)
-            break
-        except Exception:
-            continue
-    if info is None:
-        raise RuntimeError("PDF render failed: %s" % err.decode("utf-8", "replace")[-800:])
-    if "error" in info:
-        raise RuntimeError("PDF render failed: %s" % info["error"])
-    return info
+            os.remove(out_png)
+        except OSError:
+            pass
+
+
+PREVIEW_MAX_PX = 9000
+
+
+def render_preview(pdf_path, page=0):
+    """Sharp display image (up to PREVIEW_DISPLAY_DPI) plus the PREVIEW_DPI grayscale used for
+    alignment. Returns (info, display QImage, gray, display_scale) where display_scale maps
+    display pixels to preview (PREVIEW_DPI) pixels."""
+    f = max(1, int(round(PREVIEW_DISPLAY_DPI / PREVIEW_DPI)))
+    try:
+        fitz = _import_fitz()
+        with fitz.open(pdf_path) as doc:
+            r = doc[max(0, min(int(page), doc.page_count - 1))].rect
+        while f > 1 and max(r.width, r.height) / 72.0 * PREVIEW_DPI * f > PREVIEW_MAX_PX:
+            f -= 1
+    except Exception:
+        pass
+    info, rgb = render_pdf_rgb(pdf_path, PREVIEW_DPI * f, page)
+    gray = rgb_to_gray(rgb)
+    if f > 1:
+        h, w = gray.shape[0] // f * f, gray.shape[1] // f * f
+        gray = np.round(gray[:h, :w].reshape(h // f, f, w // f, f).mean(axis=(1, 3))).astype(np.uint8)
+    info = dict(info, width=gray.shape[1], height=gray.shape[0])
+    return info, rgb_to_qimage(rgb), gray, 1.0 / f
+
+
+def make_paper_transparent(rgba, lo=215.0, hi=250.0, rows=512):
+    """Fade near-white paper to transparent with a smooth ramp (min channel lo..hi) and pull the
+    remaining colour away from white ("colour to alpha"), so anti-aliased text and road edges
+    leave no white halo over imagery. Works in row chunks to keep memory low."""
+    for y0 in range(0, rgba.shape[0], rows):
+        blk = rgba[y0:y0 + rows]
+        c = blk[..., :3].astype(np.float32)
+        a = np.clip((hi - c.min(axis=2)) / (hi - lo), 0.0, 1.0)
+        part = (a > 0) & (a < 1)
+        if part.any():
+            c[part] = 255.0 - (255.0 - c[part]) / a[part][:, None]
+            blk[..., :3] = np.clip(np.round(c), 0, 255).astype(np.uint8)
+        blk[..., 3] = np.round(blk[..., 3] * a).astype(np.uint8)
 
 
 def make_masked_image(pdf_path, page, pdf_info, T_for, mask_rings, white_transparent, tmpdir):
@@ -583,20 +710,12 @@ def make_masked_image(pdf_path, page, pdf_info, T_for, mask_rings, white_transpa
     T_for(w, h) maps top-left-origin pixels of a w x h image to UOR. Returns (path, (w, h))."""
     longest_in = max(pdf_info["w_pt"], pdf_info["h_pt"]) / 72.0
     dpi = min(MASK_IMAGE_DPI, MASK_IMAGE_MAX_PX / max(longest_in, 1e-6))
-    raw = os.path.join(tmpdir, "page_%d.png" % int(time.time() * 1000))
-    render_pdf_page(pdf_path, raw, dpi, page)
-    src = QtGui.QImage(raw).convertToFormat(QtGui.QImage.Format_RGBA8888)
-    if src.isNull():
-        raise RuntimeError("Rendered page image could not be loaded.")
-    w, h = src.width(), src.height()
-    try:
-        os.remove(raw)
-    except OSError:
-        pass
-    ptr = src.constBits()
-    ptr.setsize(src.byteCount())
-    rgba = np.frombuffer(ptr, np.uint8).reshape(h, src.bytesPerLine())[:, :4 * w].reshape(h, w, 4).copy()
-    del src
+    _, rgb = render_pdf_rgb(pdf_path, dpi, page)
+    h, w = rgb.shape[:2]
+    rgba = np.empty((h, w, 4), np.uint8)
+    rgba[..., :3] = rgb
+    rgba[..., 3] = 255
+    del rgb
     if mask_rings:
         Minv = np.linalg.inv(T_for(w, h))
         path = QtGui.QPainterPath()
@@ -620,7 +739,7 @@ def make_masked_image(pdf_path, page, pdf_info, T_for, mask_rings, white_transpa
         if not alpha.any():
             raise RuntimeError("The county boundary does not overlap the PDF page; check the alignment.")
     if white_transparent:
-        rgba[(rgba[..., :3] >= 235).all(axis=2), 3] = 0
+        make_paper_transparent(rgba)
     rgba[rgba[..., 3] == 0, :3] = 0
     out = QtGui.QImage(rgba.data, w, h, 4 * w, QtGui.QImage.Format_RGBA8888)
     base = os.path.splitext(os.path.basename(pdf_path))[0]
@@ -1548,17 +1667,20 @@ class MapView(QtWidgets.QGraphicsView):
     def _clamp_to_image(self, sp):
         if self.pixmap_item is None:
             return sp.x(), sp.y()
-        br = self.pixmap_item.boundingRect()
+        br = self.pixmap_item.sceneBoundingRect()
         return (min(max(sp.x(), br.left()), br.right()), min(max(sp.y(), br.top()), br.bottom()))
 
     # ---- content
-    def set_image(self, qimg):
+    def set_image(self, qimg, scale=1.0):
+        """scale maps image pixels to scene (PREVIEW_DPI) pixels, so a higher-DPI image stays aligned."""
         if self.pixmap_item is not None:
             self.scene().removeItem(self.pixmap_item)
         self.pixmap_item = self.scene().addPixmap(QtGui.QPixmap.fromImage(qimg))
         self.pixmap_item.setZValue(0)
         self.pixmap_item.setTransformationMode(QtCore.Qt.SmoothTransformation)
-        self.scene().setSceneRect(QtCore.QRectF(-200, -200, qimg.width() + 400, qimg.height() + 400))
+        self.pixmap_item.setScale(scale)
+        w, h = qimg.width() * scale, qimg.height() * scale
+        self.scene().setSceneRect(QtCore.QRectF(-200, -200, w + 400, h + 400))
         self.fit()
 
     def set_pdf_opacity(self, v):
@@ -2396,12 +2518,15 @@ class GeorefWindow(QtWidgets.QWidget):
                 break
 
     def autodetect_juris(self):
-        j = guess_jurisdiction(self.pdf_path, self.juris)
+        j, src = guess_jurisdiction(self.pdf_path, self.juris), "file name"
         if j is None:
-            self.lb_juris.setText("Could not detect jurisdiction from the file name – pick it from the list.")
+            pg = int(self.pdf_info["page"]) if self.pdf_info else 0
+            j, src = guess_jurisdiction_from_text(self.pdf_path, pg, self.juris), "PDF title text"
+        if j is None:
+            self.lb_juris.setText("Could not detect jurisdiction from the file name or PDF text – pick it from the list.")
             return False
         self.select_juris(j)
-        self.lb_juris.setText("Auto-detected from file name: %s" % j.get("NAMELSAD"))
+        self.lb_juris.setText("Auto-detected from %s: %s" % (src, j.get("NAMELSAD")))
         self.log("Detected jurisdiction: %s (VDOT code %s)" % (j.get("NAMELSAD"), j.get("VDOT_CODE")), "ok")
         if not self.cur_juris or self.cur_juris["OBJECTID"] != j["OBJECTID"]:
             self.load_boundary()
@@ -2500,14 +2625,12 @@ class GeorefWindow(QtWidgets.QWidget):
         path = os.path.normpath(path)
         new_file = loaded = False
         with self.busy("Rendering preview of %s…" % os.path.basename(path)):
-            out = os.path.join(self.tmpdir, "preview_%d.png" % int(time.time() * 1000))
-            info = self.run_bg(render_pdf_page, path, out, PREVIEW_DPI, page)
-            img = QtGui.QImage(out)
+            info, img, gray, disp_scale = self.run_bg(render_preview, path, page)
             if img.isNull():
-                raise RuntimeError("Preview image could not be loaded.")
+                raise RuntimeError("Preview image could not be created.")
             new_file = path != self.pdf_path
-            self.pdf_path, self.pdf_info, self.preview_png = path, info, out
-            self.gray = qimage_to_gray(img)
+            self.pdf_path, self.pdf_info, self.preview_png = path, info, None
+            self.gray = gray
             self.aligner = Aligner(self.gray, PREVIEW_DPI)
             self.ed_pdf.setText(path)
             self.ed_pdf.setToolTip(path)
@@ -2516,7 +2639,7 @@ class GeorefWindow(QtWidgets.QWidget):
             self.sp_page.setValue(int(info["page"]) + 1)
             self.sp_page.blockSignals(False)
             self.lb_pdf.setText("%d page(s) · %.1f × %.1f in" % (info["pages"], info["w_pt"] / 72.0, info["h_pt"] / 72.0))
-            self.view.set_image(img)
+            self.view.set_image(img, disp_scale)
             self.view.set_pdf_opacity(self.sl_pdf.value() / 100.0)
             self.chk_region.setChecked(False)
             self.card_pdf.set_done(os.path.basename(path))

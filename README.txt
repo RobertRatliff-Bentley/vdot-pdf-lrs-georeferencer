@@ -11,7 +11,7 @@ INSTALL (no internet needed)
   2. Double-click Install.bat and allow Administrator access.
      - Installs the bundled Python libraries (PyMuPDF, numpy, pyproj, shapely and their
        dependencies) into C:\ProgramData\Bentley\PowerPlatformPython.
-     - Copies vdot_project_mapper.py and the VBA macro VDOT_Project_Mapper_Launcher.mvba into every
+     - Copies vdot_project_mapper.py and the VBA macro VDOT_Project_Mapper.mvba into every
        C:\ProgramData\Bentley\<product>\Configuration\Organization\Macros folder and adds
        vdot_project_mapper.cfg so the macro is found from any WorkSet.
   3. Restart MicroStation.
@@ -22,11 +22,14 @@ INSTALL (no internet needed)
 RUN
   Open a DGN with a geographic coordinate system and key in:
      python load vdot_project_mapper.py
-  or run the VBA macro (same window and behaviour - it starts the Python tool):
-     vba run [VDOT_Project_Mapper_Launcher]VdotProjectMapper.Main
-     (or Utilities > Macro > Macros... > VDOT_Project_Mapper_Launcher > Main; this key-in can be put on a
-      toolbar button or function key)
-  VdotProjectMapper.bas is the VBA source of the macro.
+
+LRS ITEM TYPES
+  With "LRS item types" checked (default), placed elements get MicroStation Item Types from
+  the VDOT LRS (library VDOT_LRS, visible in Properties and usable in reports/display rules):
+     LRS_Route    - RouteName, CommonName, Category, RouteClass, RouteNumber, RouteType,
+                    Direction, Jurisdiction, RouteID, LRS_OBJECTID, Source (on every route)
+     LRS_Boundary - Name, FullName, JurisType, VDOTCode, FIPS, District, LRS_OBJECTID,
+                    Source (on the boundary shape)
 
 NATIVE VBA VERSION (no Python required)
   VDOT_Project_Mapper.mvba is a stand-alone VBA rewrite of the tool with the same window,
@@ -34,6 +37,8 @@ NATIVE VBA VERSION (no Python required)
   high-resolution masked PNG tiles + hidden PDF placement, scale bar and north arrow. It does not need Python
   or the bundled libraries - it only needs MicroStation/OpenRoads and internet access.
      vba run [VDOT_Project_Mapper]modMain.Main
+  (or Utilities > Macro > Macros... > VDOT_Project_Mapper > Main; this key-in can be put on a
+   toolbar button or function key)
   Differences: the viewer zooms with the toolbar buttons (no mouse wheel); page 1 of the PDF
   is used. VDOT_Project_Mapper_src\ holds the VBA source modules.
   Log: %TEMP%\vdot_georef_native.log

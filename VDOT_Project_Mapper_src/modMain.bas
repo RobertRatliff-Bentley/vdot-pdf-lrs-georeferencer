@@ -24,6 +24,10 @@ Public Const KEY_COLOR As Long = &H1FF01          ' colour-key used for transpar
 
 '---------------------------------------------------------------- route groups
 Public Const NGRP As Long = 7
+Public Const ROUTE_ITEM_PROPS As String = "RouteName,CommonName,Category,RouteClass,RouteNumber,RouteType,Direction,Jurisdiction,RouteID,LRS_OBJECTID,Source"
+Public Const ROUTE_ITEM_SRC As String = "RTE_NM,RTE_COMMON_NM,RTE_CATEGORY_NM,,RTE_NBR,RTE_TYPE_NM,RTE_DIRECTION_CD,RTE_JURIS_PROPER_NM,ROUTESYSIDSHORT,OBJECTID,"
+Public Const BND_ITEM_PROPS As String = "Name,FullName,JurisType,VDOTCode,FIPS,District,LRS_OBJECTID,Source"
+Public Const BND_ITEM_SRC As String = "NAME,NAMELSAD,JURISTYPE,VDOT_CODE,STCOFIPS,DISTRICT,,"
 Public Const VDOT_MAPS_URL As String = "https://www.vdot.virginia.gov/travel-traffic/maps/"
 Public GrpName(0 To 6) As String, GrpCats(0 To 6) As Variant, GrpOn(0 To 6) As Boolean
 Public GrpColor(0 To 6) As Long, GrpWeight(0 To 6) As Long, GrpPrev(0 To 6) As Long, GrpPx(0 To 6) As Double
@@ -684,11 +688,26 @@ Public Sub DoPlace()
         If Len(lv(i)) = 0 Then lv(i) = defs(i)
     Next
     SplitRings gRingsW, gNR, outers, nO, holes, nH
+    Dim useItems As Boolean, itB As ItemType, itR As ItemType, iv As Object, ip As Variant, isrc As Variant, ik As Long
+    useItems = Chk("chkItems")
     If Chk("chkPlaceBnd") Then
+        If useItems Then
+            ip = Split(BND_ITEM_PROPS, ","): isrc = Split(BND_ITEM_SRC, ",")
+            Set itB = LrsItemType("LRS_Boundary", ip)
+            Set iv = CreateObject("Scripting.Dictionary")
+            For ik = 0 To UBound(ip)
+                If Len(isrc(ik)) Then iv(ip(ik)) = ItemStr(gCurJuris, CStr(isrc(ik)))
+            Next
+            iv("LRS_OBJECTID") = CStr(Abs(CLng(Val(ItemStr(gCurJuris, "OBJECTID")))))
+            iv("Source") = "VDOT " & IIf(ItemStr(gCurJuris, "JURISTYPE") = "DI", "Districts", "VA_Jurisdictions")
+        End If
         For i = 0 To gNR - 1
-            If AddCurve(gRingsW(i), True, lv(0), 3, 4) Then nEl = nEl + 1
+            If AddCurve(gRingsW(i), True, lv(0), 3, 4) Then
+                nEl = nEl + 1
+                If Not itB Is Nothing Then AttachLrsItem itB, gLastEl, iv
+            End If
         Next
-        LogMsg "Placed " & nEl & " boundary shape(s) on level " & lv(0) & ".", "ok"
+        LogMsg "Placed " & nEl & " boundary shape(s) on level " & lv(0) & IIf(itB Is Nothing, "", " with LRS_Boundary items") & ".", "ok"
     End If
     SetProgress 1
     If Chk("chkPlaceRoutes") And gNRt > 0 Then
@@ -704,16 +723,38 @@ Public Sub DoPlace()
         For g = 0 To NGRP - 1
             gl(g) = RouteLevelName(lv(1), g)
         Next
+        Dim ra As Object
+        If useItems Then
+            ip = Split(ROUTE_ITEM_PROPS, ","): isrc = Split(ROUTE_ITEM_SRC, ",")
+            Set itR = LrsItemType("LRS_Route", ip)
+        End If
         For i = 0 To nR - 1
             g = GroupOf(rts(i).Cat)
             If gc(g) = 0 Then EnsureLevel gl(g), GrpColor(g), GrpWeight(g), "VDOT LRS " & GrpName(g) & " routes"
-            If AddCurve(rts(i), False, gl(g), GrpColor(g), GrpWeight(g)) Then cnt = cnt + 1: gc(g) = gc(g) + 1
+            If AddCurve(rts(i), False, gl(g), GrpColor(g), GrpWeight(g)) Then
+                cnt = cnt + 1: gc(g) = gc(g) + 1
+                If Not itR Is Nothing Then
+                    Set ra = Nothing
+                    If Not gRouteAttrs Is Nothing Then
+                        If gRouteAttrs.Exists(rts(i).Nm) Then Set ra = gRouteAttrs(rts(i).Nm)
+                    End If
+                    Set iv = CreateObject("Scripting.Dictionary")
+                    For ik = 0 To UBound(ip)
+                        If Len(isrc(ik)) Then iv(ip(ik)) = ItemStr(ra, CStr(isrc(ik)))
+                    Next
+                    If Len(iv("RouteName")) = 0 Then iv("RouteName") = rts(i).Nm
+                    If Len(iv("Category")) = 0 Then iv("Category") = rts(i).Cat
+                    iv("RouteClass") = GrpName(g)
+                    iv("Source") = "VDOT LRS_Route_Master"
+                    AttachLrsItem itR, gLastEl, iv
+                End If
+            End If
             If i Mod 250 = 0 Then DoEvents
         Next
         For g = 0 To NGRP - 1
             If gc(g) > 0 Then summ = summ & vbLf & "    " & gl(g) & ": " & gc(g)
         Next
-        LogMsg "Placed " & cnt & " LRS route element(s) on per-class levels:" & summ, "ok"
+        LogMsg "Placed " & cnt & " LRS route element(s)" & IIf(itR Is Nothing, "", " with LRS_Route items") & " on per-class levels:" & summ, "ok"
     End If
     SetProgress 2
     If doRaster Then

@@ -3,7 +3,7 @@
   Created by Robert Ratliff
 
   1. Installs the bundled Python libraries (wheels\) into Bentley's PowerPlatform Python (no internet needed).
-  2. Copies vdot_project_mapper.py, VDOT_Project_Mapper_Launcher.mvba and VDOT_Project_Mapper.mvba into <Organization>\Macros\ for every MicroStation-based product found
+  2. Copies vdot_project_mapper.py and VDOT_Project_Mapper.mvba into <Organization>\Macros\ for every MicroStation-based product found
      (or the one given with -OrganizationPath) and adds a small .cfg so MicroStation finds it from any WorkSet.
 
   Usage (Install.bat runs this elevated):
@@ -16,7 +16,6 @@ param(
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $script = Join-Path $here "vdot_project_mapper.py"
-$mvba   = Join-Path $here "VDOT_Project_Mapper_Launcher.mvba"
 $mvbaNative = Join-Path $here "VDOT_Project_Mapper.mvba"
 $wheels = Join-Path $here "wheels"
 $req = Join-Path $here "requirements.txt"
@@ -83,11 +82,10 @@ MS_VBASEARCHDIRECTORIES    > `$(_USTN_ORGANIZATION)Macros/
         $mac = Join-Path $org "Macros"
         New-Item -ItemType Directory -Force $mac | Out-Null
         Copy-Item $script (Join-Path $mac "vdot_project_mapper.py") -Force
-        if (Test-Path $mvba) { Copy-Item $mvba (Join-Path $mac "VDOT_Project_Mapper_Launcher.mvba") -Force }
         if (Test-Path $mvbaNative) { Copy-Item $mvbaNative (Join-Path $mac "VDOT_Project_Mapper.mvba") -Force }
         [IO.File]::WriteAllText((Join-Path $org "vdot_project_mapper.cfg"), $cfgText)
         # Remove copies installed under the old "VDOT Map Georeferencer" names.
-        foreach ($old in @("Macros\vdot_pdf_lrs_clipper.py", "Macros\VDOT_Georef.mvba", "Macros\VDOT_Georef_Native.mvba", "vdot_pdf_georef.cfg")) {
+        foreach ($old in @("Macros\vdot_pdf_lrs_clipper.py", "Macros\VDOT_Georef.mvba", "Macros\VDOT_Georef_Native.mvba", "Macros\VDOT_Project_Mapper_Launcher.mvba", "vdot_pdf_georef.cfg")) {
             $op = Join-Path $org $old
             if (Test-Path $op) { Remove-Item $op -Force -ErrorAction SilentlyContinue }
         }
@@ -98,8 +96,6 @@ MS_VBASEARCHDIRECTORIES    > `$(_USTN_ORGANIZATION)Macros/
     Write-Host @"
    Restart MicroStation, open a DGN that has a coordinate system, then key in:
        python load vdot_project_mapper.py
-   or the VBA macro:
-       vba run [VDOT_Project_Mapper_Launcher]VdotProjectMapper.Main
    or the native VBA version (no Python needed):
        vba run [VDOT_Project_Mapper]modMain.Main
    Install log: $log

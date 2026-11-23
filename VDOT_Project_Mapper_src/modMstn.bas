@@ -12,6 +12,8 @@ Private mBigW As Long, mBigH As Long, mBigTop As Boolean
 Private mKx As Double, mKy As Double, mRx() As TPoly, mNM As Long, mWhite As Boolean
 Private mCx0 As Long, mCy0 As Long, mCw As Long, mCh As Long, mNTX As Long, mNTY As Long
 Private mOutBase As String
+Public gLastEl As Element       ' last element added by AddCurve
+Public Const ITEM_LIB As String = "VDOT_LRS"
 
 '---------------------------------------------------------------- little-endian helpers
 Private Function GetL(b() As Byte, ByVal o As Long) As Long
@@ -711,10 +713,62 @@ NextPt:
     End If
     Props el, lvName, color, weight
     ActiveModelReference.AddElement el
+    Set gLastEl = el
     AddCurve = True
     Exit Function
 EH:
     AddCurve = False
+End Function
+
+' Find or create an item type (string properties) in the VDOT_LRS item type library of the active file.
+Public Function LrsItemType(ByVal typeName As String, props As Variant) As ItemType
+    Dim libs As New ItemTypeLibraries, lib As ItemTypeLibrary, it As ItemType, i As Long, changed As Boolean
+    On Error Resume Next
+    Set lib = libs.FindByName(ITEM_LIB)
+    On Error GoTo EH
+    If lib Is Nothing Then Set lib = libs.CreateLib(ITEM_LIB, False)
+    Set it = lib.GetItemTypeByName(typeName)
+    If it Is Nothing Then Set it = lib.AddItemType(typeName, False): changed = True
+    For i = 0 To UBound(props)
+        If it.GetPropertyByName(CStr(props(i))) Is Nothing Then
+            it.AddProperty CStr(props(i)), ItemPropertyTypeString, False
+            changed = True
+        End If
+    Next
+    If changed Then lib.Write
+    Set LrsItemType = it
+    Exit Function
+EH:
+    LogMsg "Item type " & typeName & " unavailable: " & Err.Description, "warn"
+    Set LrsItemType = Nothing
+End Function
+
+Public Function ItemStr(d As Object, ByVal key As String) As String
+    Dim v As Variant
+    On Error Resume Next
+    If d Is Nothing Then Exit Function
+    If Not d.Exists(key) Then Exit Function
+    If IsObject(d(key)) Then Exit Function
+    v = d(key)
+    If IsNull(v) Or IsEmpty(v) Then Exit Function
+    ItemStr = Trim$(CStr(v))
+End Function
+
+' Attach an item to an element; vals = Scripting.Dictionary of property -> value.
+Public Function AttachLrsItem(it As ItemType, el As Element, vals As Object) As Boolean
+    Dim h As ItemTypePropertyHandler, k As Variant, v As Variant
+    If it Is Nothing Or el Is Nothing Then Exit Function
+    On Error GoTo EH
+    Set h = it.AttachItem(el)
+    If h Is Nothing Then Exit Function
+    For Each k In vals.Keys
+        v = CStr(vals(k))
+        If Len(v) Then h.SetPropertyValue CStr(k), v
+    Next
+    AttachLrsItem = True
+    Exit Function
+EH:
+    AttachLrsItem = False
 End Function
 
 Private Function AddShapeXY(xs As Variant, ys As Variant, ByVal lvName As String, ByVal color As Long, ByVal filled As Boolean) As Boolean

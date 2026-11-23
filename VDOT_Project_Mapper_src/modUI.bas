@@ -406,7 +406,7 @@ Public Sub BuildUI(ByVal frm As Object)
     T = T + 152 + 12
 
     ' 5 Output
-    Set f = CardFrame(5, "Place in MicroStation", T, 357)
+    Set f = CardFrame(5, "Place in MicroStation", T, 375)
     lv = Array("chkPlaceBnd", "Boundary shapes", True, "", _
                "chkPlaceRoutes", "LRS routes", True, "", _
                "chkPlaceRaster", "Map image", True, "Render the PDF page at the chosen resolution to high-resolution PNG tiles (saved next to the PDF) and attach them georeferenced", _
@@ -414,19 +414,20 @@ Public Sub BuildUI(ByVal frm As Object)
                "chkWhite", "Transparent white", False, "Make white paper transparent so imagery/linework shows through", _
                "chkHoles", "Mask holes", False, "Exclude interior holes of the boundary (e.g. independent cities)", _
                "chkPdfOff", "Also attach PDF (off)", True, "Also attach the full original PDF page, georeferenced but turned off in all views", _
-               "chkScaleNorth", "Scale bar & north arrow", True, "Place a scale bar and a true-north arrow below the county's bottom-right corner")
-    For i = 0 To 7
+               "chkScaleNorth", "Scale bar & north arrow", True, "Place a scale bar and a true-north arrow below the county's bottom-right corner", _
+               "chkItems", "LRS item types", True, "Attach VDOT_LRS item types (LRS_Route / LRS_Boundary) with the LRS attributes (route name, common name, category, route number, direction, FIPS, district...) to the placed route and boundary elements")
+    For i = 0 To 8
         Set o = Add(f, "Forms.CheckBox.1", CStr(lv(i * 4)), "chk", PAD + (i Mod 2) * cw2, 34 + (i \ 2) * 18, cw2 - 4, 17, _
                     CStr(lv(i * 4 + 1)), CStr(lv(i * 4 + 3)))
         o.Value = lv(i * 4 + 2)
     Next
-    Add f, "Forms.Label.1", "lblTranspCap", "text", PAD, 112, 104, 14, "Raster transparency"
-    Set o = Add(f, "Forms.ScrollBar.1", "scrTransp", "scroll", PAD + 108, 112, IW - 108 - 42, 13)
+    Add f, "Forms.Label.1", "lblTranspCap", "text", PAD, 130, 104, 14, "Raster transparency"
+    Set o = Add(f, "Forms.ScrollBar.1", "scrTransp", "scroll", PAD + 108, 130, IW - 108 - 42, 13)
     o.Orientation = 1: o.Min = 0: o.Max = 90: o.SmallChange = 1: o.LargeChange = 10: o.Value = 0
-    Set o = Add(f, "Forms.Label.1", "lblTransp", "text", PAD + IW - 36, 112, 36, 14, "0 %")
+    Set o = Add(f, "Forms.Label.1", "lblTransp", "text", PAD + IW - 36, 130, 36, 14, "0 %")
     o.TextAlign = 3
-    Add f, "Forms.Label.1", "lblResCap", "text", PAD, 136, 104, 14, "Image resolution"
-    Set o = Add(f, "Forms.ComboBox.1", "cboRes", "input", PAD + 108, 133, IW - 108, 20)
+    Add f, "Forms.Label.1", "lblResCap", "text", PAD, 154, 104, 14, "Image resolution"
+    Set o = Add(f, "Forms.ComboBox.1", "cboRes", "input", PAD + 108, 151, IW - 108, 20)
     o.Style = 2
     o.AddItem "150 DPI (fast)": o.AddItem "200 DPI": o.AddItem "300 DPI (sharp)": o.AddItem "400 DPI (very sharp)"
     o.ListIndex = 1
@@ -434,16 +435,16 @@ Public Sub BuildUI(ByVal frm As Object)
     lvl = Array("Boundary level", "VDOT_LRS_Boundary", "Routes level", "VDOT_LRS_Routes", _
                 "Raster level", "VDOT_PDF_Map", "Annotation level", "VDOT_Map_Annotation")
     For i = 0 To 3
-        Add f, "Forms.Label.1", "lblLv" & i, "text", PAD, 159 + i * 23, 104, 14, CStr(lvl(i * 2))
-        Add(f, "Forms.TextBox.1", "txtLv" & i, "input", PAD + 108, 156 + i * 23, IW - 108, 19).text = CStr(lvl(i * 2 + 1))
+        Add f, "Forms.Label.1", "lblLv" & i, "text", PAD, 177 + i * 23, 104, 14, CStr(lvl(i * 2))
+        Add(f, "Forms.TextBox.1", "txtLv" & i, "input", PAD + 108, 174 + i * 23, IW - 108, 19).text = CStr(lvl(i * 2 + 1))
         If i = 1 Then SetTip "lblLv1", "Prefix for the per-class route levels": SetTip "txtLv1", "Routes go on one level per LRS class: <prefix>_Interstate, _US_Primary, _State_Primary, _Secondary, _Ramps_Frontage, _Urban_Streets, _Other."
     Next
-    AddBtn f, "btnPlace", "Place in MicroStation  " & ChrW(&H279C), "primary", PAD, 253, IW, 30
-    AddBtn f, "btnDelete", ChrW(&H2715) & "  Delete placed drawing & rasters", "danger", PAD, 289, IW, 26, _
+    AddBtn f, "btnPlace", "Place in MicroStation  " & ChrW(&H279C), "primary", PAD, 271, IW, 30
+    AddBtn f, "btnDelete", ChrW(&H2715) & "  Delete placed drawing & rasters", "danger", PAD, 307, IW, 26, _
         "Delete everything on this tool's boundary, route, raster and annotation levels in the active model and detach its raster attachments (asks first)."
-    Set o = Add(f, "Forms.Label.1", "lblOut", "hint", PAD, 323, IW, 30, "")
+    Set o = Add(f, "Forms.Label.1", "lblOut", "hint", PAD, 341, IW, 30, "")
     o.WordWrap = True
-    T = T + 357 + 12
+    T = T + 375 + 12
     C("fraSide").ScrollHeight = T
     RecordAnchors
 
@@ -602,7 +603,7 @@ Private Sub RecordAnchors()
         "chkGrp0:P chkGrp1:P chkGrp2:P chkGrp3:P chkGrp4:P chkGrp5:P chkGrp6:P chkClipRoutes:P chkShowRoutes:P " & _
         "lblRoutes:S btnRoutes:R " & _
         "chkUseRoutes:R btnAuto:P btnRefine:P btnReset:P btnPan:P btnAdjust:P btnTie:P lblFit:S btnClearPins:R " & _
-        "chkPlaceBnd:P chkPlaceRoutes:P chkPlaceRaster:P chkClip:P chkWhite:P chkHoles:P chkPdfOff:P chkScaleNorth:P " & _
+        "chkPlaceBnd:P chkPlaceRoutes:P chkPlaceRaster:P chkClip:P chkWhite:P chkHoles:P chkPdfOff:P chkScaleNorth:P chkItems:P " & _
         "scrTransp:S lblTransp:R cboRes:S txtLv0:S txtLv1:S txtLv2:S txtLv3:S btnPlace:S btnDelete:S lblOut:S", " ")
     For i = 0 To UBound(spec)
         p = InStr(spec(i), ":"): nm = Left$(spec(i), p - 1)

@@ -5,6 +5,8 @@ Option Explicit
 Public Const JURIS_URL As String = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/VA_Jurisdictions/FeatureServer/0"
 Public Const DISTRICT_URL As String = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/VDOTAdministrativeBoundaries/FeatureServer/2"
 Public Const LRS_URL As String = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/LRS_Route_Master/FeatureServer/0"
+Public Const ROUTE_ITEM_FIELDS As String = "OBJECTID,RTE_NM,RTE_COMMON_NM,RTE_CATEGORY_NM,RTE_NBR,RTE_TYPE_NM,RTE_DIRECTION_CD,RTE_JURIS_PROPER_NM,ROUTESYSIDSHORT"
+Public gRouteAttrs As Object    ' RTE_NM -> LRS attribute dictionary of the last route download
 
 Public Function UrlEnc(ByVal s As String) As String
     Dim by() As Byte, i As Long, o As String, c As Long
@@ -192,6 +194,7 @@ Public Function GetRoutes(ByVal bx0 As Double, ByVal by0 As Double, ByVal bx1 As
         where = where & IIf(Len(where), ",", "") & "'" & Replace(CStr(c), "'", "''") & "'"
     Next
     where = "RTE_CATEGORY_NM IN (" & where & ")"
+    Set gRouteAttrs = CreateObject("Scripting.Dictionary")
     ReDim routes(0 To 255)
     Do
         Set prm = CreateObject("Scripting.Dictionary")
@@ -200,7 +203,7 @@ Public Function GetRoutes(ByVal bx0 As Double, ByVal by0 As Double, ByVal bx1 As
         prm("geometryType") = "esriGeometryEnvelope"
         prm("inSR") = CStr(outSR)
         prm("spatialRel") = "esriSpatialRelIntersects"
-        prm("outFields") = "OBJECTID,RTE_NM,RTE_COMMON_NM,RTE_CATEGORY_NM"
+        prm("outFields") = ROUTE_ITEM_FIELDS
         prm("returnGeometry") = "true"
         prm("outSR") = CStr(outSR)
         prm("maxAllowableOffset") = "0.00001"
@@ -212,6 +215,9 @@ Public Function GetRoutes(ByVal bx0 As Double, ByVal by0 As Double, ByVal bx1 As
         feats = DGet(js, "features", Array())
         For f = 0 To UBound(feats)
             Set a = feats(f)("attributes")
+            If Len(CStr(DGet(a, "RTE_NM", ""))) Then
+                If Not gRouteAttrs.Exists(CStr(DGet(a, "RTE_NM", ""))) Then Set gRouteAttrs(CStr(DGet(a, "RTE_NM", ""))) = a
+            End If
             If feats(f).Exists("geometry") Then
                 If IsObject(feats(f)("geometry")) Then
                     Set g = feats(f)("geometry")

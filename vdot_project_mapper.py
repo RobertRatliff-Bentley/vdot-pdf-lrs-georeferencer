@@ -161,6 +161,17 @@ def vdot_logo_pixmap(height=None):
     return pm
 
 JURIS_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/VA_Jurisdictions/FeatureServer/0"
+ITEM_LIBRARY = "VDOT_LRS"
+# (property, LRS field) pairs for the item types attached to placed elements
+ROUTE_ITEM_PROPS = [("RouteName", "RTE_NM"), ("CommonName", "RTE_COMMON_NM"),
+                    ("Category", "RTE_CATEGORY_NM"), ("RouteClass", None), ("RouteNumber", "RTE_NBR"),
+                    ("RouteType", "RTE_TYPE_NM"), ("Direction", "RTE_DIRECTION_CD"),
+                    ("Jurisdiction", "RTE_JURIS_PROPER_NM"), ("RouteID", "ROUTESYSIDSHORT"),
+                    ("LRS_OBJECTID", "OBJECTID"), ("Source", None)]
+ROUTE_ITEM_FIELDS = ",".join(f for _, f in ROUTE_ITEM_PROPS if f)
+BOUNDARY_ITEM_PROPS = [("Name", "NAME"), ("FullName", "NAMELSAD"), ("JurisType", "JURISTYPE"),
+                       ("VDOTCode", "VDOT_CODE"), ("FIPS", "STCOFIPS"), ("District", "DISTRICT"),
+                       ("LRS_OBJECTID", "OBJECTID"), ("Source", None)]
 LRS_URL = "https://services.arcgis.com/p5v98VHDX9Atv3l7/arcgis/rest/services/LRS_Route_Master/FeatureServer/0"
 
 JURIS_TYPES = {"CO": "County", "CI": "City", "TO": "Town", "DI": "District"}
@@ -372,13 +383,14 @@ class VdotRestClient:
         cats = ",".join("'%s'" % c.replace("'", "''") for c in categories)
         where = "RTE_CATEGORY_NM IN (%s)" % cats
         out, offset = [], 0
+        self.route_attrs = attrs = {}
         while True:
             js = self._query(LRS_URL, {
                 "where": where,
                 "geometry": "%.8f,%.8f,%.8f,%.8f" % tuple(bbox),
                 "geometryType": "esriGeometryEnvelope", "inSR": out_sr,
                 "spatialRel": "esriSpatialRelIntersects",
-                "outFields": "OBJECTID,RTE_NM,RTE_COMMON_NM,RTE_CATEGORY_NM",
+                "outFields": ROUTE_ITEM_FIELDS,
                 "returnGeometry": "true", "outSR": out_sr,
                 "maxAllowableOffset": 0.00001, "geometryPrecision": 7,
                 "orderByFields": "OBJECTID",
@@ -387,6 +399,8 @@ class VdotRestClient:
             for f in feats:
                 g = f.get("geometry") or {}
                 a = f["attributes"]
+                if a.get("RTE_NM"):
+                    attrs.setdefault(a["RTE_NM"], a)
                 for path in g.get("paths", []):
                     if len(path) >= 2:
                         out.append((a.get("RTE_CATEGORY_NM") or "", a.get("RTE_NM") or "",
@@ -1396,7 +1410,56 @@ class MstnPlacer:
             st.SetWeight(weight)
         st.Apply(eeh)
 
-    def add_curve(self, pts, closed, level, color, weight):
+    def item_type(self, type_name, props):
+        """Find or create an item type (all string properties) in the VDOT_LRS library."""
+        if not hasattr(self, "_itypes"):
+            self._itypes = {}
+        if type_name in self._itypes:
+            return self._itypes[type_name]
+        it = None
+        try:
+            lib = ItemTypeLibrary.FindByName(ITEM_LIBRARY, self.dgn)
+            if lib is None:
+                lib = ItemTypeLibrary(ITEM_LIBRARY, self.dgn, False)
+            it = lib.GetItemTypeByName(type_name)
+            changed = False
+            if it is None:
+                it = lib.AddItemType(type_name, False)
+                changed = True
+            for pname, _ in props:
+                if it.GetPropertyByName(pname) is None:
+                    it.AddProperty(pname, False).SetType(CustomProperty.Type1.eString)
+                    changed = True
+            if changed:
+                lib.Write()
+                lib = ItemTypeLibrary.FindByName(ITEM_LIBRARY, self.dgn)
+                it = lib.GetItemTypeByName(type_name)
+            self._itlibs = getattr(self, "_itlibs", []) + [lib]  # keep the library alive
+        except Exception as ex:
+            _log_console("Item type %s unavailable: %s" % (type_name, ex))
+            it = None
+        self._itypes[type_name] = it
+        return it
+
+    def attach_item(self, eeh, item):
+        """item = (ItemType, {property: value})."""
+        it, values = item
+        if it is None:
+            return False
+        try:
+            inst = CustomItemHost(eeh, False).ApplyCustomItem(it)
+            if inst is None:
+                return False
+            for k, v in values.items():
+                if v is not None and v != "":
+                    inst.SetValue(k, ECValue(str(v).strip()))
+            inst.WriteChanges()
+            return True
+        except Exception as ex:
+            _log_console("Item attach failed: %s" % ex)
+            return False
+
+    def add_curve(self, pts, closed, level, color, weight, item=None):
         if len(pts) < 2:
             return False
         if closed and (pts[0] != pts[-1]).any():
@@ -1410,7 +1473,11 @@ class MstnPlacer:
         if DraftingElementSchema.ToElement(eeh, cv, None, self.is3d, self.model) != BentleyStatus.eSUCCESS:
             return False
         self._apply_props(eeh, level, color, weight)
-        return eeh.AddToModel() == BentleyStatus.eSUCCESS
+        if eeh.AddToModel() != BentleyStatus.eSUCCESS:
+            return False
+        if item is not None:
+            self.attach_item(eeh, item)
+        return True
 
     def add_shape(self, pts, level, color, weight=0, fill=None):
         pts = np.asarray(pts, float)
@@ -2403,6 +2470,10 @@ class GeorefWindow(QtWidgets.QWidget):
         self.chk_holes = QtWidgets.QCheckBox("Mask holes")
         self.chk_pdf_off = QtWidgets.QCheckBox("Also attach PDF (off)")
         self.chk_scale_north = QtWidgets.QCheckBox("Scale bar && north arrow")
+        self.chk_items = QtWidgets.QCheckBox("LRS item types")
+        self.chk_items.setToolTip("Attach VDOT_LRS item types (LRS_Route / LRS_Boundary) with the LRS attributes "
+                                  "(route name, common name, category, route number, direction, FIPS, district?) "
+                                  "to the placed route and boundary elements")
         self.chk_scale_north.setToolTip("Place a scale bar and a true-north arrow below the county's bottom-right corner")
         self.chk_pdf_off.setToolTip("Also attach the full original PDF page, georeferenced but turned off in all views")
         self.chk_place_raster.setToolTip("Render the PDF page at the chosen resolution to high-resolution PNG tiles (saved next to the PDF) and attach them georeferenced")
@@ -2411,7 +2482,7 @@ class GeorefWindow(QtWidgets.QWidget):
         self.chk_holes.setToolTip("Exclude interior holes of the boundary (e.g. independent cities)")
         for cb, on in ((self.chk_place_bnd, True), (self.chk_place_routes, True), (self.chk_place_raster, True),
                        (self.chk_clip, True), (self.chk_white, False), (self.chk_holes, False),
-                       (self.chk_pdf_off, True), (self.chk_scale_north, True)):
+                       (self.chk_pdf_off, True), (self.chk_scale_north, True), (self.chk_items, True)):
             cb.setChecked(on)
         grid.addWidget(self.chk_place_bnd, 0, 0)
         grid.addWidget(self.chk_place_routes, 0, 1)
@@ -2421,6 +2492,7 @@ class GeorefWindow(QtWidgets.QWidget):
         grid.addWidget(self.chk_holes, 2, 1)
         grid.addWidget(self.chk_pdf_off, 3, 0)
         grid.addWidget(self.chk_scale_north, 3, 1)
+        grid.addWidget(self.chk_items, 4, 0)
         c5.body.addLayout(grid)
         self._fence_changed()
         form = QtWidgets.QFormLayout()
@@ -3144,9 +3216,17 @@ class GeorefWindow(QtWidgets.QWidget):
             n_el = 0
             if self.chk_place_bnd.isChecked():
                 lid = placer.level_id(lv["boundary"])
+                bitem = None
+                if self.chk_items.isChecked():
+                    j = self.cur_juris or {}
+                    vals = {p: j.get(f) for p, f in BOUNDARY_ITEM_PROPS if f}
+                    vals["LRS_OBJECTID"] = abs(int(j.get("OBJECTID") or 0)) or None
+                    vals["Source"] = "VDOT %s" % ("Districts" if j.get("JURISTYPE") == "DI" else "VA_Jurisdictions")
+                    bitem = (placer.item_type("LRS_Boundary", BOUNDARY_ITEM_PROPS), vals)
                 for r in self.rings_w:
-                    n_el += bool(placer.add_curve(r, True, lid, 3, 4))
-                self.log("Placed %d boundary shape(s) on level %s." % (n_el, lv["boundary"]), "ok")
+                    n_el += bool(placer.add_curve(r, True, lid, 3, 4, bitem))
+                self.log("Placed %d boundary shape(s) on level %s%s." % (
+                    n_el, lv["boundary"], " with LRS_Boundary items" if bitem and bitem[0] else ""), "ok")
             self.progress.setValue(1)
             self.pump()
             if self.chk_place_routes.isChecked() and self.routes:
@@ -3161,18 +3241,27 @@ class GeorefWindow(QtWidgets.QWidget):
                         self.log("shapely is not installed, so routes were not clipped to the fence.", "warn")
                 cnt = 0
                 per_level = {}
+                rtype = placer.item_type("LRS_Route", ROUTE_ITEM_PROPS) if self.chk_items.isChecked() else None
+                rattrs = getattr(self.client, "route_attrs", {}) or {}
                 for i, (cat, name, ll, w, n) in enumerate(routes):
                     g = next((g for g in ROUTE_GROUPS if cat in g[1]), ROUTE_GROUPS[-1])
                     lname = route_level_name(lv["routes"], g[0])
                     if lname not in per_level:
                         per_level[lname] = [placer.level_id(lname, g[3], g[4], "VDOT LRS %s routes" % g[0]), 0]
-                    if placer.add_curve(w, False, per_level[lname][0], g[3], g[4]):
+                    ritem = None
+                    if rtype is not None:
+                        a = rattrs.get(name) or {"RTE_NM": name, "RTE_CATEGORY_NM": cat}
+                        vals = {p: a.get(f) for p, f in ROUTE_ITEM_PROPS if f}
+                        vals["RouteClass"] = g[0]
+                        vals["Source"] = "VDOT LRS_Route_Master"
+                        ritem = (rtype, vals)
+                    if placer.add_curve(w, False, per_level[lname][0], g[3], g[4], ritem):
                         cnt += 1
                         per_level[lname][1] += 1
                     if i % 250 == 0:
                         self.pump()
-                self.log("Placed %d LRS route element(s) on per-class levels:%s" % (
-                    cnt, "".join("\n    %s: %d" % (k, v[1]) for k, v in per_level.items() if v[1])), "ok")
+                self.log("Placed %d LRS route element(s)%s on per-class levels:%s" % (
+                    cnt, " with LRS_Route items" if rtype is not None else "", "".join("\n    %s: %d" % (k, v[1]) for k, v in per_level.items() if v[1])), "ok")
             self.progress.setValue(2)
             self.pump()
             if do_raster:

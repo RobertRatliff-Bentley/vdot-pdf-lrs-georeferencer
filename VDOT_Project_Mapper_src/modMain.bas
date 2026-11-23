@@ -277,19 +277,21 @@ Public Function GuessJurisdiction(ByVal pdfPath As String) As Object
         End If
     End If
     If words.Count > 0 Then
-        Dim isCity As Boolean, best As Object, bestScore As Long, sc As Long, nm As String
+        Dim isCity As Boolean, isDist As Boolean, best As Object, bestScore As Long, sc As Long, nm As String
         For i = 1 To words.Count
             If words(i) = "city" Then isCity = True
+            If words(i) = "district" Then isDist = True
         Next
         bestScore = -1
         For Each j In gJuris
             nm = LCase$(CStr(DGet(j, "NAME", "")))
-            If CStr(DGet(j, "JURISTYPE", "")) = "DI" Then nm = ""
+            If CStr(DGet(j, "JURISTYPE", "")) = "DI" And Not isDist Then nm = ""
             If Len(nm) > 0 Then
                 If WholeWord(" " & text & " ", nm) Then
                     sc = Len(nm)
                     If (DGet(j, "JURISTYPE", "") = "CI") = isCity Then sc = sc + 5
                     If DGet(j, "JURISTYPE", "") = "CO" Then sc = sc + 2
+                    If DGet(j, "JURISTYPE", "") = "DI" Then sc = sc + 20
                     If sc > bestScore Then bestScore = sc: Set best = j
                 End If
             End If
@@ -318,7 +320,7 @@ Public Function AutodetectJuris() As Boolean
     End If
     SelectJuris j
     SetCap "lblJuris", "Auto-detected from file name: " & DGet(j, "NAMELSAD", "")
-    LogMsg "Detected jurisdiction: " & DGet(j, "NAMELSAD", "") & " (VDOT code " & DGet(j, "VDOT_CODE", "") & ")", "ok"
+    LogMsg "Detected jurisdiction: " & DGet(j, "NAMELSAD", "") & IIf(Len(CStr(DGet(j, "VDOT_CODE", ""))) > 0, " (VDOT code " & DGet(j, "VDOT_CODE", "") & ")", ""), "ok"
     Dim same As Boolean
     If Not gCurJuris Is Nothing Then same = (CLng(DGet(gCurJuris, "OBJECTID", -1)) = CLng(DGet(j, "OBJECTID", -2)))
     If Not same Then DoLoadBoundary
@@ -730,7 +732,7 @@ Public Sub DoPlace()
         img = MakeMaskedImage(mask, nM, Chk("chkWhite"), iw, ih)
         AttachImage img, lv(2), CLng(GetVal("scrTransp")), True
         LogMsg "Map image attached: " & FileTitle(img) & " (" & iw & " " & UTimes() & " " & ih & " px)" & _
-            IIf(nM > 0, ", everything outside the " & IIf(hasF, "fence", "county") & " is transparent", ""), "ok"
+            IIf(nM > 0, ", everything outside the " & IIf(hasF, "fence", "boundary") & " is transparent", ""), "ok"
         If Chk("chkPdfOff") Then
             AttachPdfHidden lv(2)
             LogMsg "Original PDF attached, turned off in all views " & UDash() & " turn it on per view in Raster Manager.", "ok"

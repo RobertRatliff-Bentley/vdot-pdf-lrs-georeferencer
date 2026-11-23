@@ -1129,6 +1129,11 @@ Public Sub SelectJuris(ByVal j As Object)
     Dim i As Long, lst As Object
     If Not FormIsOpen() Then Exit Sub
     mSilent = True
+    If DGet(j, "JURISTYPE", "") = "DI" Then
+        For i = 1 To 9
+            If NormDistrict(VdotDistrict(i)) = NormDistrict(CStr(DGet(j, "NAME", ""))) Then C("cboType").ListIndex = 4 + i: Exit For
+        Next
+    End If
     If Not JurisMatches(j) Then C("cboType").ListIndex = 0
     C("txtSearch").text = ""
     SyncPlaceholder "txtSearch"

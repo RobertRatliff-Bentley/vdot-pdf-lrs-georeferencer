@@ -500,11 +500,16 @@ def guess_jurisdiction(pdf_path, juris_list):
     if words:
         text = " ".join(words)
         isCity = "city" in words
+        isDistrict = "district" in words
         best = None
         for j in juris_list:
             nm = (j.get("NAME") or "").lower()
+            isDI = j.get("JURISTYPE") == "DI"
+            if isDI and not isDistrict:
+                continue
             if nm and re.search(r"\b%s\b" % re.escape(nm), text):
                 score = len(nm) + (5 if (j.get("JURISTYPE") == "CI") == isCity else 0) + (2 if j.get("JURISTYPE") == "CO" else 0)
+                score += 20 if isDI else 0
                 if best is None or score > best[0]:
                     best = (score, j)
         if best:
@@ -2624,17 +2629,21 @@ class GeorefWindow(QtWidgets.QWidget):
                 break
 
     def autodetect_juris(self):
+        j, src = guess_jurisdiction(self.pdf_path, self.juris), "file name"
         juris = [x for x in self.juris if x.get("JURISTYPE") != "DI"]
-        j, src = guess_jurisdiction(self.pdf_path, juris), "file name"
         if j is None:
             pg = int(self.pdf_info["page"]) if self.pdf_info else 0
             j, src = guess_jurisdiction_from_text(self.pdf_path, pg, juris), "PDF title text"
         if j is None:
             self.lb_juris.setText("Could not detect jurisdiction from the file name or PDF text – pick it from the list.")
             return False
+        if j.get("JURISTYPE") == "DI":
+            k = next((i for i, d in enumerate(VDOT_DISTRICTS) if norm_district(d) == norm_district(j.get("NAME"))), -1)
+            if k >= 0:
+                self.cb_type.setCurrentIndex(5 + k)
         self.select_juris(j)
         self.lb_juris.setText("Auto-detected from %s: %s" % (src, j.get("NAMELSAD")))
-        self.log("Detected jurisdiction: %s (VDOT code %s)" % (j.get("NAMELSAD"), j.get("VDOT_CODE")), "ok")
+        self.log("Detected jurisdiction: %s%s" % (j.get("NAMELSAD"), " (VDOT code %s)" % j["VDOT_CODE"] if j.get("VDOT_CODE") else ""), "ok")
         if not self.cur_juris or self.cur_juris["OBJECTID"] != j["OBJECTID"]:
             self.load_boundary()
         return True
@@ -3084,7 +3093,7 @@ class GeorefWindow(QtWidgets.QWidget):
                 placer.attach_raster(img_path, T_for, size, lvl, self.sl_transp.value())
                 self.log("Map image attached: %s (%d ? %d px)%s" % (
                     os.path.basename(img_path), size[0], size[1],
-                    ", everything outside the %s is transparent" % ("fence" if fence_w else "county")
+                    ", everything outside the %s is transparent" % ("fence" if fence_w else "boundary")
                     if mask_rings else ""), "ok")
                 if self.chk_pdf_off.isChecked():
                     k = PDF_ATTACH_DPI_GUESS / 72.0

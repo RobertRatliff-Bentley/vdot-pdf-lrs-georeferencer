@@ -13,6 +13,7 @@ Private mKx As Double, mKy As Double, mRx() As TPoly, mNM As Long, mWhite As Boo
 Private mCx0 As Long, mCy0 As Long, mCw As Long, mCh As Long, mNTX As Long, mNTY As Long
 Private mOutBase As String
 Public gLastEl As Element       ' last element added by AddCurve
+Public gItemErr As String
 Public Const ITEM_LIB As String = "VDOT_LRS"
 
 '---------------------------------------------------------------- little-endian helpers
@@ -722,20 +723,45 @@ End Function
 
 ' Find or create an item type (string properties) in the VDOT_LRS item type library of the active file.
 Public Function LrsItemType(ByVal typeName As String, props As Variant) As ItemType
-    Dim libs As New ItemTypeLibraries, lib As ItemTypeLibrary, it As ItemType, i As Long, changed As Boolean
+    Dim libs As New ItemTypeLibraries, lib As ItemTypeLibrary, it As ItemType, pr As ItemTypeProperty, i As Long, changed As Boolean
     On Error Resume Next
     Set lib = libs.FindByName(ITEM_LIB)
+    If Not lib Is Nothing Then
+        'A library found in a DGNLib must be copied into the active file before items can be attached.
+        If Not lib.IsFromActiveDgn Then
+            lib.SaveToActiveDgn
+            libs.Refresh
+            Set lib = libs.FindByName(ITEM_LIB)
+            If Not lib Is Nothing Then If Not lib.IsFromActiveDgn Then Set lib = Nothing
+        End If
+    End If
+    Err.Clear
     On Error GoTo EH
     If lib Is Nothing Then Set lib = libs.CreateLib(ITEM_LIB, False)
+    If lib Is Nothing Then Err.Raise vbObjectError + 1, , "could not create item type library " & ITEM_LIB
+    'GetItemTypeByName / GetPropertyByName raise an error (not Nothing) when the name is missing.
+    On Error Resume Next
     Set it = lib.GetItemTypeByName(typeName)
+    Err.Clear
+    On Error GoTo EH
     If it Is Nothing Then Set it = lib.AddItemType(typeName, False): changed = True
     For i = 0 To UBound(props)
-        If it.GetPropertyByName(CStr(props(i))) Is Nothing Then
+        Set pr = Nothing
+        On Error Resume Next
+        Set pr = it.GetPropertyByName(CStr(props(i)))
+        Err.Clear
+        On Error GoTo EH
+        If pr Is Nothing Then
             it.AddProperty CStr(props(i)), ItemPropertyTypeString, False
             changed = True
         End If
     Next
-    If changed Then lib.Write
+    If changed Then
+        If Not lib.Write Then Err.Raise vbObjectError + 2, , "could not save item type library " & ITEM_LIB
+        Set lib = libs.FindByName(ITEM_LIB)
+        Set it = lib.GetItemTypeByName(typeName)
+        If it Is Nothing Then Err.Raise vbObjectError + 3, , "item type not found after saving"
+    End If
     Set LrsItemType = it
     Exit Function
 EH:
@@ -760,7 +786,7 @@ Public Function AttachLrsItem(it As ItemType, el As Element, vals As Object) As 
     If it Is Nothing Or el Is Nothing Then Exit Function
     On Error GoTo EH
     Set h = it.AttachItem(el)
-    If h Is Nothing Then Exit Function
+    If h Is Nothing Then gItemErr = "AttachItem returned nothing": Exit Function
     For Each k In vals.Keys
         v = CStr(vals(k))
         If Len(v) Then h.SetPropertyValue CStr(k), v
@@ -768,6 +794,7 @@ Public Function AttachLrsItem(it As ItemType, el As Element, vals As Object) As 
     AttachLrsItem = True
     Exit Function
 EH:
+    gItemErr = Err.Description
     AttachLrsItem = False
 End Function
 

@@ -688,7 +688,8 @@ Public Sub DoPlace()
         If Len(lv(i)) = 0 Then lv(i) = defs(i)
     Next
     SplitRings gRingsW, gNR, outers, nO, holes, nH
-    Dim useItems As Boolean, itB As ItemType, itR As ItemType, iv As Object, ip As Variant, isrc As Variant, ik As Long
+    Dim useItems As Boolean, itB As ItemType, itR As ItemType, iv As Object, ip As Variant, isrc As Variant, ik As Long, nItB As Long, nItR As Long
+    gItemErr = ""
     useItems = Chk("chkItems")
     If Chk("chkPlaceBnd") Then
         If useItems Then
@@ -704,10 +705,11 @@ Public Sub DoPlace()
         For i = 0 To gNR - 1
             If AddCurve(gRingsW(i), True, lv(0), 3, 4) Then
                 nEl = nEl + 1
-                If Not itB Is Nothing Then AttachLrsItem itB, gLastEl, iv
+                If Not itB Is Nothing Then If AttachLrsItem(itB, gLastEl, iv) Then nItB = nItB + 1
             End If
         Next
-        LogMsg "Placed " & nEl & " boundary shape(s) on level " & lv(0) & IIf(itB Is Nothing, "", " with LRS_Boundary items") & ".", "ok"
+        LogMsg "Placed " & nEl & " boundary shape(s) on level " & lv(0) & IIf(nItB > 0, " with " & nItB & " LRS_Boundary item(s)", "") & ".", "ok"
+        If useItems And nItB < nEl Then LogMsg "LRS_Boundary items attached to " & nItB & " of " & nEl & " shape(s)" & IIf(Len(gItemErr), ": " & gItemErr, "."), "warn"
     End If
     SetProgress 1
     If Chk("chkPlaceRoutes") And gNRt > 0 Then
@@ -746,7 +748,7 @@ Public Sub DoPlace()
                     If Len(iv("Category")) = 0 Then iv("Category") = rts(i).Cat
                     iv("RouteClass") = GrpName(g)
                     iv("Source") = "VDOT LRS_Route_Master"
-                    AttachLrsItem itR, gLastEl, iv
+                    If AttachLrsItem(itR, gLastEl, iv) Then nItR = nItR + 1
                 End If
             End If
             If i Mod 250 = 0 Then DoEvents
@@ -754,7 +756,8 @@ Public Sub DoPlace()
         For g = 0 To NGRP - 1
             If gc(g) > 0 Then summ = summ & vbLf & "    " & gl(g) & ": " & gc(g)
         Next
-        LogMsg "Placed " & cnt & " LRS route element(s)" & IIf(itR Is Nothing, "", " with LRS_Route items") & " on per-class levels:" & summ, "ok"
+        LogMsg "Placed " & cnt & " LRS route element(s)" & IIf(nItR > 0, " with " & nItR & " LRS_Route items", "") & " on per-class levels:" & summ, "ok"
+        If useItems And nItR < cnt Then LogMsg "LRS_Route items attached to " & nItR & " of " & cnt & " route(s)" & IIf(Len(gItemErr), ": " & gItemErr, "."), "warn"
     End If
     SetProgress 2
     If doRaster Then

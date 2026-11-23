@@ -182,6 +182,8 @@ def route_level_name(prefix, group_label):
     """Per-class route level, e.g. VDOT_LRS_Routes_US_Primary."""
     return "%s_%s" % (prefix, group_label.replace(" & ", "_").replace(" ", "_"))
 
+VDOT_MAPS_URL = "https://www.vdot.virginia.gov/travel-traffic/maps/"
+
 DEFAULT_LEVELS = {
     "boundary": "VDOT_LRS_Boundary",
     "routes": "VDOT_LRS_Routes",
@@ -2114,6 +2116,13 @@ class GeorefWindow(QtWidgets.QWidget):
         self.lb_pdf = QtWidgets.QLabel("")
         self.lb_pdf.setObjectName("hint")
         row.addWidget(self.lb_pdf)
+        c1.body.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        b = QtWidgets.QPushButton("🌐  Get VDOT county maps…")
+        b.setToolTip("Open the VDOT maps website to download county road map PDFs\n" + VDOT_MAPS_URL)
+        b.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl(VDOT_MAPS_URL)))
+        row.addWidget(b)
+        row.addStretch(1)
         c1.body.addLayout(row)
         sl.addWidget(c1)
 

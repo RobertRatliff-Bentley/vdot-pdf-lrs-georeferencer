@@ -23,6 +23,7 @@ Public Const KEY_COLOR As Long = &H1FF01          ' colour-key used for transpar
 
 '---------------------------------------------------------------- route groups
 Public Const NGRP As Long = 7
+Public Const VDOT_MAPS_URL As String = "https://www.vdot.virginia.gov/travel-traffic/maps/"
 Public GrpName(0 To 6) As String, GrpCats(0 To 6) As Variant, GrpOn(0 To 6) As Boolean
 Public GrpColor(0 To 6) As Long, GrpWeight(0 To 6) As Long, GrpPrev(0 To 6) As Long, GrpPx(0 To 6) As Double
 
@@ -760,6 +761,16 @@ Public Sub DoPlace()
 EH:
     BusyOff
     LogMsg Err.Description, "err"
+End Sub
+
+Public Sub OpenVdotMaps()
+    On Error Resume Next
+    CreateObject("Shell.Application").ShellExecute VDOT_MAPS_URL
+    If Err.Number <> 0 Then
+        LogMsg "Could not open " & VDOT_MAPS_URL & ": " & Err.Description, "err"
+    Else
+        LogMsg "Opened the VDOT maps website in your browser.", "ok"
+    End If
 End Sub
 
 '---------------------------------------------------------------- delete placed drawing

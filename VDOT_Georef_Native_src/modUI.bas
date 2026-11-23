@@ -335,7 +335,7 @@ Public Sub BuildUI(ByVal frm As Object)
     T = 12
 
     ' 1 Map PDF
-    Set f = CardFrame(1, "Map PDF", T, 82)
+    Set f = CardFrame(1, "Map PDF", T, 112)
     Set o = Add(f, "Forms.TextBox.1", "txtPdf", "input", PAD, 34, IW - 72, 20)
     o.Locked = True
     Placeholder f, "txtPdf", "Select a VDOT county road map PDF" & UEll()
@@ -343,7 +343,9 @@ Public Sub BuildUI(ByVal frm As Object)
     Add f, "Forms.Label.1", "lblPage", "text", PAD, 62, 60, 14, "Page  1"
     Set o = Add(f, "Forms.Label.1", "lblPdf", "hint", PAD + 60, 62, IW - 60, 14, "")
     o.TextAlign = 3
-    T = T + 82 + 12
+    AddBtn f, "btnMaps", "Get VDOT county maps " & ChrW(&H2197), "btn", PAD, 82, 170, 20, _
+        "Open the VDOT maps website to download county road map PDFs" & vbLf & VDOT_MAPS_URL
+    T = T + 112 + 12
 
     ' 2 Jurisdiction
     Set f = CardFrame(2, "Jurisdiction boundary", T, 214)
@@ -770,6 +772,7 @@ Public Sub OnEvent(ByVal nm As String, ByVal kind As String)
         Case "chkPlaceRaster": UpdateState
         Case "btnPlace": DoPlace
         Case "btnDelete": DoDeletePlaced
+        Case "btnMaps": OpenVdotMaps
         Case "btnFit": ViewFit
         Case "btnZoomIn": ViewZoom 1.25
         Case "btnZoomOut": ViewZoom 0.8
